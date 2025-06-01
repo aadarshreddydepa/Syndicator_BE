@@ -45,7 +45,7 @@ class Transactions(models.Model):
     transaction_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     risk_taker_id = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='risk_taker')
     syndicators = models.JSONField(default=list, blank=True)
-    total_prinicipal_amount = models.FloatField(validators=[MinValueValidator(0)])
+    total_principal_amount = models.FloatField(validators=[MinValueValidator(0)])
     total_interest = models.FloatField(validators=[MinValueValidator(0)])
     created_at = models.DateTimeField(auto_now_add=True)
     start_date = models.DateField(blank=False)

@@ -4,7 +4,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 
 from .models import CustomUser, FriendList, FriendRequest, Splitwise, Transactions
 
-from .serializers import RegisterSerializer, UserSerializer
+from .serializers import PortfolioSerializer, RegisterSerializer, UserSerializer
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.views import APIView
@@ -254,18 +254,32 @@ class UpdateFriendRequestStatusView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+# Updated view using your existing PortfolioSerializer
 class AllTransactionView(APIView):
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
         username = request.query_params.get("username")
+        
+        if not username:
+            return Response({
+                "error": "Username parameter is required"
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         try:
             user = CustomUser.objects.get(username=username)
             transactions = Transactions.objects.filter(risk_taker_id=user)
-            return Response({"transactions": transactions}, status=status.HTTP_200_OK)
-        except Transactions.DoesNotExist:
+            
+            # Use your existing PortfolioSerializer
+            serializer = PortfolioSerializer(transactions, many=True)
+            
             return Response({
-                "error": "Transactions not found"
+                "transactions": serializer.data
+            }, status=status.HTTP_200_OK)
+            
+        except CustomUser.DoesNotExist:
+            return Response({
+                "error": "User not found"
             }, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({
