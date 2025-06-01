@@ -1,7 +1,8 @@
+from datetime import date
 from django.db.models.base import transaction
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
-from .models import CustomUser, FriendList, FriendRequest, Transactions
+from .models import CustomUser, FriendList, FriendRequest, Splitwise, Transactions
 
 from .serializers import RegisterSerializer, UserSerializer
 from rest_framework.response import Response
@@ -247,6 +248,119 @@ class UpdateFriendRequestStatusView(APIView):
             return Response({
                 "error": "Friend request not found"
             }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({
+                "error": f"An unexpected error occurred: {str(e)}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class AllTransactionView(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        username = request.query_params.get("username")
+        try:
+            user = CustomUser.objects.get(username=username)
+            transactions = Transactions.objects.filter(risk_taker_id=user)
+            return Response({"transactions": transactions}, status=status.HTTP_200_OK)
+        except Transactions.DoesNotExist:
+            return Response({
+                "error": "Transactions not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({
+                "error": f"An unexpected error occurred: {str(e)}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class CreateTransactionView(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        # Extract data from request
+        username = request.data.get("username")
+        total_principal_amount = request.data.get("total_prinicpal_amount")  # Note: keeping your typo for consistency
+        total_interest_amount = request.data.get("total_interest_amount")
+        syndicate_details = request.data.get("syndicate_details", {})
+        
+        # Validation
+        if not username:
+            return Response({
+                "error": "Username is required"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        if total_principal_amount is None or total_interest_amount is None:
+            return Response({
+                "error": "total_prinicpal_amount and total_interest_amount are required"
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        if not syndicate_details:
+            return Response({
+                "error": "syndicate_details is required"
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            with transaction.atomic():
+                # Get the risk taker user
+                risk_taker = CustomUser.objects.get(username=username)
+                
+                # Validate all syndicate usernames exist
+                syndicate_usernames = list(syndicate_details.keys())
+                existing_users = CustomUser.objects.filter(username__in=syndicate_usernames)
+                existing_usernames = set(user.username for user in existing_users)
+                
+                missing_usernames = set(syndicate_usernames) - existing_usernames
+                if missing_usernames:
+                    return Response({
+                        "error": f"Users not found: {', '.join(missing_usernames)}"
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                
+                # Create syndicators list with user IDs
+                syndicators_list = []
+                for user in existing_users:
+                    syndicators_list.append({
+                        'user_id': str(user.user_id),
+                        'username': user.username
+                    })
+                
+                # Create the transaction
+                new_transaction = Transactions.objects.create(
+                    risk_taker_id=risk_taker,
+                    syndicators=syndicators_list,
+                    total_prinicipal_amount=float(total_principal_amount),
+                    total_interest=float(total_interest_amount),
+                    start_date=date.today()  # You can modify this as needed
+                )
+                
+                # Create Splitwise entries for each syndicate member
+                splitwise_entries = []
+                for username_key, details in syndicate_details.items():
+                    principal_amount = details.get('prinicipal_amount', 0)  # Note: keeping your typo
+                    interest_amount = details.get('interest', 0)
+                    
+                    splitwise_entry = Splitwise.objects.create(
+                        transaction_id=new_transaction,
+                        principal_amount=float(principal_amount),
+                        interest_amount=float(interest_amount)
+                    )
+                    splitwise_entries.append(splitwise_entry)
+                
+                # Return success response
+                return Response({
+                    "message": "Transaction created successfully",
+                    "transaction_id": str(new_transaction.transaction_id),
+                    "total_principal_amount": new_transaction.total_prinicipal_amount,
+                    "total_interest": new_transaction.total_interest,
+                    "splitwise_entries_count": len(splitwise_entries)
+                }, status=status.HTTP_201_CREATED)
+                
+        except CustomUser.DoesNotExist:
+            return Response({
+                "error": f"User with username '{username}' not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+        except ValueError as e:
+            return Response({
+                "error": f"Invalid data format: {str(e)}"
+            }, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({
                 "error": f"An unexpected error occurred: {str(e)}"
