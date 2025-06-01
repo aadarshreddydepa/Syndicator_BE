@@ -17,8 +17,14 @@ class CustomUser(AbstractUser):
     
 class FriendList(models.Model):
     friend_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user_id = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='current_user')
-    mutual_friends = models.JSONField(default=list, blank=True)
+    user_id = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='friend_lists')
+    
+    # Many-to-Many relationship with CustomUser for mutual friends
+    mutual_friends = models.ManyToManyField(
+        CustomUser, 
+        blank=True, 
+        related_name='mutual_friend_of'
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
 class FriendRequest(models.Model):

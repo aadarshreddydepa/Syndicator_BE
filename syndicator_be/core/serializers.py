@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import CustomUser
+from .models import CustomUser, Transactions
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
@@ -17,3 +17,9 @@ class RegisterSerializer(serializers.ModelSerializer):
         user = CustomUser.objects.create_user(**validated_data)
         user.save()
         return user
+
+
+class PortfolioSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Transactions
+        fields = ['transaction_id', 'risk_taker_id', 'syndicators', 'total_principal_amount', 'total_interest', 'created_at', 'start_date']

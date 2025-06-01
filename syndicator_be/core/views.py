@@ -1,5 +1,6 @@
-from django.shortcuts import render
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
+
+from .models import CustomUser, Transactions
 
 from .serializers import RegisterSerializer, UserSerializer
 from rest_framework.response import Response
@@ -17,7 +18,6 @@ from django.conf import settings
 class RegisterView(APIView):
 
     def post(self, request):
-        print("LJBDSLJBFLDKJ", request.data)
         serializer = RegisterSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
@@ -29,11 +29,8 @@ class LoginView(APIView):
     permission_classes = []
 
     def post(self, request):
-        print("LJBDSLJBFLDKJ")
         username = request.data.get("username")
         password = request.data.get("password")
-        print("username",  username)
-        print("password",  password)
         user = authenticate(request, username=username, password=password)
 
         if user:
@@ -64,3 +61,22 @@ class LoginView(APIView):
         return Response({"error": "Invalid credentials"}, status=status.HTTP_400_BAD_REQUEST)
     
     
+class PortfolioView(APIView):
+    permission_classes = [IsAuthenticated]
+    def get(self, request):
+        username= request.data.get("username")
+        try:
+            user = CustomUser.objects.get(username=username)
+            transactions = Transactions.objects.filter(risk_taker_id=user)
+            t_principal_amount = 0
+            t_interest_amount = 0
+            for transaction in transactions:
+                t_principal_amount += transaction.total_principal_amount
+                t_interest_amount += transaction.total_principal_amount * transaction.total_interest / 100
+            return Response({"total_principal_amount": t_principal_amount, "total_interest_amount": t_interest_amount}, status=status.HTTP_201_CREATED)
+        except CustomUser.DoesNotExist:
+            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+        except Transactions.DoesNotExist:
+            return Response({"error": "Transactions not found"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
