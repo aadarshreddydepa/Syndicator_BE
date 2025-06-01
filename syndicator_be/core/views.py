@@ -13,7 +13,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 # from rest_framework_simplejwt.views import TokenObtainPairView
 from django.contrib.auth import authenticate
 from django.conf import settings
-
+from django.db.models import Q
 # Create your views here.
 
 class RegisterView(APIView):
@@ -146,40 +146,42 @@ class AddMutualFriendView(APIView):
         
         try:
             with transaction.atomic():
-                # Get both users by username
                 user = CustomUser.objects.get(username=username)
                 mutual_friend = CustomUser.objects.get(username=mutual_friend_name)
                 
-                # Get or create the friend list for the user
-                friend_list, created = FriendList.objects.get_or_create(user_id=user)
+                # Check if there's an accepted friend request between these users
+                # We need to check both directions: user->mutual_friend and mutual_friend->user
+                friend_request_exists = FriendRequest.objects.filter(
+                    Q(user_id=user, requested_id=mutual_friend, status='accepted') |
+                    Q(user_id=mutual_friend, requested_id=user, status='accepted')
+                ).exists()
                 
-                # Check if mutual friend is already in the list
-                if friend_list.mutual_friends.filter(username=mutual_friend_name).exists():
+                if friend_request_exists:
                     return Response({
-                        "message": "User is already in the mutual friends list",
-                        "friend_list_id": str(friend_list.friend_id),
-                        "user": username,
-                        "mutual_friend": mutual_friend_name
+                        "message": "These users are already friends through an accepted friend request."
                     }, status=status.HTTP_200_OK)
+                if not friend_request_exists:
+                    friend_request, created = FriendRequest.objects.get_or_create(user_id=user, requested_id=mutual_friend)
+                # Check if mutual friend is already in the list
+                # if friend_list.mutual_friends.filter(username=mutual_friend_name).exists():
+                #     return Response({
+                #         "message": "User is already in the mutual friends list",
+                #         "friend_list_id": str(friend_list.friend_id),
+                #         "user": username,
+                #         "mutual_friend": mutual_friend_name
+                #     }, status=status.HTTP_200_OK)
                 
                 # Add mutual friend to the list
-                friend_list.mutual_friends.add(mutual_friend)
+                # friend_list.mutual_friends.add(mutual_friend)
                 
                 # Prepare response data
                 response_data = {
                     "message": "Mutual friend added successfully",
-                    "friend_list_id": str(friend_list.friend_id),
-                    "user": {
-                        "user_id": str(user.user_id),
-                        "username": user.username,
-                        "name": user.name
-                    },
-                    "added_friend": {
-                        "user_id": str(mutual_friend.user_id),
-                        "username": mutual_friend.username,
-                        "name": mutual_friend.name
-                    },
-                    "friend_list_created": created
+                    "friend_request_id": str(friend_request.request_id),
+                    "user": username,
+                    "mutual_friend": mutual_friend_name,
+                    "status": friend_request.status,
+        
                 }
                 
                 return Response(response_data, status=status.HTTP_201_CREATED)
@@ -234,15 +236,107 @@ class UpdateFriendRequestStatusView(APIView):
     def post(self, request):
         username = request.data.get("username")
         request_id = request.data.get("request_id")
-        status = request.data.get("status")
-        try:
-            user = CustomUser.objects.get(username=username)
-            friend_request = FriendRequest.objects.get(user_id=user, request_id=request_id)
-            friend_request.status = status
-            friend_request.save()
+        new_status = request.data.get("status")
+        
+        # Validate required fields
+        if not username or not request_id or not new_status:
             return Response({
-                "message": "Friend request status updated successfully"
-            }, status=status.HTTP_200_OK)
+                "error": "username, request_id, and status are required"
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate status value
+        valid_statuses = ['pending', 'accepted', 'rejected', 'canceled']
+        if new_status not in valid_statuses:
+            return Response({
+                "error": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            with transaction.atomic():
+                user = CustomUser.objects.get(username=username)
+                friend_request = FriendRequest.objects.get(user_id=user, request_id=request_id)
+                
+                # Update the friend request status
+                old_status = friend_request.status
+                friend_request.status = new_status
+                friend_request.save()
+                
+                response_data = {
+                    "message": "Friend request status updated successfully",
+                    "request_id": str(friend_request.request_id),
+                    "old_status": old_status,
+                    "new_status": new_status,
+                    "user": username
+                }
+                
+                # If status is changed to 'accepted', add both users to each other's friend lists
+                if new_status == 'accepted':
+                    # Get the users involved in the friend request
+                    requester = friend_request.user_id  # The user who sent the request
+                    requested = friend_request.requested_id  # The user who received the request
+                    
+                    # Get or create friend list for the requester
+                    requester_friend_list, created1 = FriendList.objects.get_or_create(user_id=requester)
+                    
+                    # Get or create friend list for the requested user
+                    requested_friend_list, created2 = FriendList.objects.get_or_create(user_id=requested)
+                    
+                    # Add each user to the other's mutual friends list (if not already added)
+                    if not requester_friend_list.mutual_friends.filter(user_id=requested.user_id).exists():
+                        requester_friend_list.mutual_friends.add(requested)
+                    
+                    if not requested_friend_list.mutual_friends.filter(user_id=requester.user_id).exists():
+                        requested_friend_list.mutual_friends.add(requester)
+                    
+                    response_data.update({
+                        "friends_added": True,
+                        "requester": {
+                            "user_id": str(requester.user_id),
+                            "username": requester.username,
+                            "name": requester.name
+                        },
+                        "requested": {
+                            "user_id": str(requested.user_id),
+                            "username": requested.username,
+                            "name": requested.name
+                        },
+                        "friend_lists_created": {
+                            "requester_list_created": created1,
+                            "requested_list_created": created2
+                        }
+                    })
+                
+                # If status is changed to 'rejected' or 'canceled', remove from friend lists if they exist
+                elif new_status in ['rejected', 'canceled']:
+                    requester = friend_request.user_id
+                    requested = friend_request.requested_id
+                    
+                    try:
+                        # Remove from requester's friend list
+                        requester_friend_list = FriendList.objects.get(user_id=requester)
+                        if requester_friend_list.mutual_friends.filter(user_id=requested.user_id).exists():
+                            requester_friend_list.mutual_friends.remove(requested)
+                    except FriendList.DoesNotExist:
+                        pass
+                    
+                    try:
+                        # Remove from requested user's friend list
+                        requested_friend_list = FriendList.objects.get(user_id=requested)
+                        if requested_friend_list.mutual_friends.filter(user_id=requester.user_id).exists():
+                            requested_friend_list.mutual_friends.remove(requester)
+                    except FriendList.DoesNotExist:
+                        pass
+                    
+                    response_data.update({
+                        "friends_removed": True
+                    })
+                
+                return Response(response_data, status=status.HTTP_200_OK)
+                
+        except CustomUser.DoesNotExist:
+            return Response({
+                "error": f"User with username '{username}' not found"
+            }, status=status.HTTP_404_NOT_FOUND)
         except FriendRequest.DoesNotExist:
             return Response({
                 "error": "Friend request not found"
