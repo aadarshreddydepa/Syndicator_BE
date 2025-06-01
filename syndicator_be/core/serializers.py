@@ -1,6 +1,11 @@
 from rest_framework import serializers
 from .models import CustomUser
 
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomUser
+        fields = ['user_id', 'username', 'email', 'phone_number']
+
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only = True)
     
@@ -10,6 +15,5 @@ class RegisterSerializer(serializers.ModelSerializer):
     
     def create(self, validated_data):
         user = CustomUser.objects.create_user(**validated_data)
-        user.is_active = True
         user.save()
         return user

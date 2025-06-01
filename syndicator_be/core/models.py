@@ -9,6 +9,8 @@ class CustomUser(AbstractUser):
     phone_number = models.CharField(max_length=20, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     name = models.CharField(max_length=26, blank=True, null=True)
+    username = models.CharField(max_length=150, unique=True)
+    email = models.EmailField(unique=True)
 
     def __str__(self):
         return self.email
