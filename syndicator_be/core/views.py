@@ -1,6 +1,6 @@
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
-from .models import CustomUser, Transactions
+from .models import CustomUser, FriendList, Transactions
 
 from .serializers import RegisterSerializer, UserSerializer
 from rest_framework.response import Response
@@ -78,5 +78,48 @@ class PortfolioView(APIView):
             return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
         except Transactions.DoesNotExist:
             return Response({"error": "Transactions not found"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+class SyndicateView(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        username = request.query_params.get("username")  # Changed from request.data
+        
+        if not username:
+            return Response({"error": "Username parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            user = CustomUser.objects.get(username=username)
+            friend_list = FriendList.objects.get(user_id=user)
+            
+            # Get the actual friends data
+            mutual_friends = friend_list.mutual_friends.all()
+            friends_data = [
+                {
+                    "user_id": str(friend.user_id),
+                    "username": friend.username,
+                    "name": friend.name,
+                    "email": friend.email
+                }
+                for friend in mutual_friends
+            ]
+            
+            response_data = {
+                "friend_list_id": str(friend_list.friend_id),
+                "user": {
+                    "user_id": str(user.user_id),
+                    "username": user.username
+                },
+                "friends": friends_data,
+                "created_at": friend_list.created_at
+            }
+            
+            return Response(response_data, status=status.HTTP_200_OK)  # Changed status code
+            
+        except CustomUser.DoesNotExist:
+            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+        except FriendList.DoesNotExist:
+            return Response({"error": "Friend list not found"}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
