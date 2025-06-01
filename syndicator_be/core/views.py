@@ -1,7 +1,7 @@
 from django.db.models.base import transaction
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
-from .models import CustomUser, FriendList, Transactions
+from .models import CustomUser, FriendList, FriendRequest, Transactions
 
 from .serializers import RegisterSerializer, UserSerializer
 from rest_framework.response import Response
@@ -197,6 +197,56 @@ class AddMutualFriendView(APIView):
                     "error": f"User with username '{username}' not found"
                 }, status=status.HTTP_404_NOT_FOUND)
                 
+        except Exception as e:
+            return Response({
+                "error": f"An unexpected error occurred: {str(e)}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class CheckFriendRequestStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        username = request.query_params.get("username")
+        try:
+            user = CustomUser.objects.get(username=username)
+            friend_request = FriendRequest.objects.get(user_id=user)
+            return Response({
+                "message": "User is in the mutual friends list",
+                "request_id": str(friend_request.request_id),
+                "requested_id": str(friend_request.requested_id),
+                "user_id": str(friend_request.user_id),
+                "status": friend_request.status,
+                "user": username
+            }, status=status.HTTP_200_OK)
+        except FriendRequest.DoesNotExist:
+            return Response({
+                "error": "Friend request not found"
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({
+                "error": f"An unexpected error occurred: {str(e)}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+
+class UpdateFriendRequestStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        username = request.data.get("username")
+        request_id = request.data.get("request_id")
+        status = request.data.get("status")
+        try:
+            user = CustomUser.objects.get(username=username)
+            friend_request = FriendRequest.objects.get(user_id=user, request_id=request_id)
+            friend_request.status = status
+            friend_request.save()
+            return Response({
+                "message": "Friend request status updated successfully"
+            }, status=status.HTTP_200_OK)
+        except FriendRequest.DoesNotExist:
+            return Response({
+                "error": "Friend request not found"
+            }, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({
                 "error": f"An unexpected error occurred: {str(e)}"
