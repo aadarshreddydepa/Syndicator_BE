@@ -204,27 +204,41 @@ class AddMutualFriendView(APIView):
             return Response({
                 "error": f"An unexpected error occurred: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+            
 class CheckFriendRequestStatusView(APIView):
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        username = request.query_params.get("username")
+        # Check if username parameter is provided (not allowed with JWT auth)
+        username_param = request.query_params.get("username")
+        if username_param:
+            return Response({
+                "error": "Username parameter not allowed. This endpoint uses JWT authentication to identify the user automatically."
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get the authenticated user from JWT token
+        authenticated_user = request.user
+        
         try:
-            user = CustomUser.objects.get(username=username)
-            
-            # Find ANY friend request involving this user (sender OR receiver)
+            # Find ALL friend requests involving the authenticated user (sender OR receiver)
             friend_requests = FriendRequest.objects.filter(
-                Q(user_id=user) | Q(requested_id=user)
+                Q(user_id=authenticated_user) | Q(requested_id=authenticated_user)
             ).order_by('-created_at')  # Order by most recent first
             
             if not friend_requests.exists():
                 return Response({
-                    "error": "Friend request not found"
-                }, status=status.HTTP_404_NOT_FOUND)
+                    "message": "No friend requests found",
+                    "user": authenticated_user.username,
+                    "user_id": str(authenticated_user.user_id),
+                    "total_requests": 0,
+                    "requests": []
+                }, status=status.HTTP_200_OK)
             
             # Build list of all requests with details
             requests_data = []
+            sent_requests = []
+            received_requests = []
+            
             for friend_request in friend_requests:
                 request_info = {
                     "request_id": str(friend_request.request_id),
@@ -236,39 +250,72 @@ class CheckFriendRequestStatusView(APIView):
                     "sender_name": friend_request.user_id.name or friend_request.user_id.username,
                     "status": friend_request.status,
                     "created_at": friend_request.created_at.isoformat(),
-                    "request_type": "sent_by_target" if friend_request.user_id == user else "received_by_target"
                 }
+                
+                # Determine if this request was sent by or received by the authenticated user
+                if friend_request.user_id == authenticated_user:
+                    request_info["request_type"] = "sent"
+                    request_info["other_user"] = {
+                        "user_id": str(friend_request.requested_id.user_id),
+                        "username": friend_request.requested_id.username,
+                        "name": friend_request.requested_id.name or friend_request.requested_id.username
+                    }
+                    sent_requests.append(request_info)
+                else:
+                    request_info["request_type"] = "received"
+                    request_info["other_user"] = {
+                        "user_id": str(friend_request.user_id.user_id),
+                        "username": friend_request.user_id.username,
+                        "name": friend_request.user_id.name or friend_request.user_id.username
+                    }
+                    received_requests.append(request_info)
+                
                 requests_data.append(request_info)
             
+            # Count requests by status
+            status_counts = {
+                "pending": 0,
+                "accepted": 0,
+                "rejected": 0,
+                "canceled": 0
+            }
+            
+            for req in requests_data:
+                status_counts[req["status"]] += 1
+            
             return Response({
-                "message": f"Found {len(requests_data)} friend requests involving {username}",
-                "user": username,
-                "user_id": str(user.user_id),
+                "message": f"Found {len(requests_data)} friend requests for {authenticated_user.username}",
+                "user": authenticated_user.username,
+                "user_id": str(authenticated_user.user_id),
                 "total_requests": len(requests_data),
-                "requests": requests_data
+                "sent_requests_count": len(sent_requests),
+                "received_requests_count": len(received_requests),
+                "status_summary": status_counts,
+                "requests": {
+                    "all": requests_data,
+                    "sent": sent_requests,
+                    "received": received_requests
+                }
             }, status=status.HTTP_200_OK)
             
-        except CustomUser.DoesNotExist:
-            return Response({
-                "error": "User not found"
-            }, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({
                 "error": f"An unexpected error occurred: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 class UpdateFriendRequestStatusView(APIView):
     permission_classes = [IsAuthenticated]
     
     def post(self, request):
-        username = request.data.get("username")
         request_id = request.data.get("request_id")
         new_status = request.data.get("status")
         
+        # Get the authenticated user from JWT token
+        authenticated_user = request.user
+        
         # Validate required fields
-        if not username or not request_id or not new_status:
+        if not request_id or not new_status:
             return Response({
-                "error": "username, request_id, and status are required"
+                "error": "request_id and status are required"
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Validate status value
@@ -280,8 +327,30 @@ class UpdateFriendRequestStatusView(APIView):
         
         try:
             with transaction.atomic():
-                user = CustomUser.objects.get(username=username)
-                friend_request = FriendRequest.objects.get(user_id=user, request_id=request_id)
+                # Find the friend request by request_id
+                friend_request = FriendRequest.objects.get(request_id=request_id)
+                
+                # Authorization: Check if the authenticated user is involved in this friend request
+                requester = friend_request.user_id  # The user who sent the request
+                requested = friend_request.requested_id  # The user who received the request
+                
+                # Verify the authenticated user is either the requester or the requested user
+                if authenticated_user.user_id not in [requester.user_id, requested.user_id]:
+                    return Response({
+                        "error": "You are not authorized to update this friend request"
+                    }, status=status.HTTP_403_FORBIDDEN)
+                
+                # Business logic: Only recipient can accept/reject, only sender can cancel
+                if new_status in ['accepted', 'rejected']:
+                    if authenticated_user.user_id != requested.user_id:
+                        return Response({
+                            "error": "Only the recipient can accept or reject a friend request"
+                        }, status=status.HTTP_403_FORBIDDEN)
+                elif new_status == 'canceled':
+                    if authenticated_user.user_id != requester.user_id:
+                        return Response({
+                            "error": "Only the sender can cancel a friend request"
+                        }, status=status.HTTP_403_FORBIDDEN)
                 
                 # Update the friend request status
                 old_status = friend_request.status
@@ -293,15 +362,13 @@ class UpdateFriendRequestStatusView(APIView):
                     "request_id": str(friend_request.request_id),
                     "old_status": old_status,
                     "new_status": new_status,
-                    "user": username
+                    "authenticated_user": authenticated_user.username,
+                    "requester": requester.username,
+                    "recipient": requested.username
                 }
                 
                 # If status is changed to 'accepted', add both users to each other's friend lists
                 if new_status == 'accepted':
-                    # Get the users involved in the friend request
-                    requester = friend_request.user_id  # The user who sent the request
-                    requested = friend_request.requested_id  # The user who received the request
-                    
                     # Get or create friend list for the requester
                     requester_friend_list, created1 = FriendList.objects.get_or_create(user_id=requester)
                     
@@ -317,12 +384,12 @@ class UpdateFriendRequestStatusView(APIView):
                     
                     response_data.update({
                         "friends_added": True,
-                        "requester": {
+                        "requester_details": {
                             "user_id": str(requester.user_id),
                             "username": requester.username,
                             "name": requester.name
                         },
-                        "requested": {
+                        "recipient_details": {
                             "user_id": str(requested.user_id),
                             "username": requested.username,
                             "name": requested.name
@@ -335,9 +402,6 @@ class UpdateFriendRequestStatusView(APIView):
                 
                 # If status is changed to 'rejected' or 'canceled', remove from friend lists if they exist
                 elif new_status in ['rejected', 'canceled']:
-                    requester = friend_request.user_id
-                    requested = friend_request.requested_id
-                    
                     try:
                         # Remove from requester's friend list
                         requester_friend_list = FriendList.objects.get(user_id=requester)
@@ -360,10 +424,6 @@ class UpdateFriendRequestStatusView(APIView):
                 
                 return Response(response_data, status=status.HTTP_200_OK)
                 
-        except CustomUser.DoesNotExist:
-            return Response({
-                "error": f"User with username '{username}' not found"
-            }, status=status.HTTP_404_NOT_FOUND)
         except FriendRequest.DoesNotExist:
             return Response({
                 "error": "Friend request not found"
@@ -372,8 +432,6 @@ class UpdateFriendRequestStatusView(APIView):
             return Response({
                 "error": f"An unexpected error occurred: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
 # Updated view using your existing PortfolioSerializer
 class AllTransactionView(APIView):
     permission_classes = [IsAuthenticated]
