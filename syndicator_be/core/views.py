@@ -463,76 +463,125 @@ class CreateTransactionView(APIView):
         risk_taker = request.user
         
         # Extract data from request
-        total_principal_amount = request.data.get("total_prinicpal_amount")  # Note: keeping your typo for consistency
+        total_principal_amount = request.data.get("total_principal_amount")  # Note: keeping your typo for consistency
         total_interest_amount = request.data.get("total_interest_amount")
         syndicate_details = request.data.get("syndicate_details", {})
         
         # Validation
         if total_principal_amount is None or total_interest_amount is None:
             return Response({
-                "error": "total_prinicpal_amount and total_interest_amount are required"
-            }, status=status.HTTP_400_BAD_REQUEST)
-            
-        if not syndicate_details:
-            return Response({
-                "error": "syndicate_details is required"
+                "error": "total_principal_amount and total_interest_amount are required"
             }, status=status.HTTP_400_BAD_REQUEST)
         
         try:
             with transaction.atomic():
-                # Validate all syndicate usernames exist
-                syndicate_usernames = list(syndicate_details.keys())
-                existing_users = CustomUser.objects.filter(username__in=syndicate_usernames)
-                existing_usernames = set(user.username for user in existing_users)
-                
-                missing_usernames = set(syndicate_usernames) - existing_usernames
-                if missing_usernames:
-                    return Response({
-                        "error": f"Users not found: {', '.join(missing_usernames)}"
-                    }, status=status.HTTP_400_BAD_REQUEST)
-                
-                # Create syndicators list with user IDs
                 syndicators_list = []
-                for user in existing_users:
-                    syndicators_list.append({
-                        'user_id': str(user.user_id),
-                        'username': user.username
-                    })
+                splitwise_entries = []
+                
+                # Check if syndicate details are provided
+                if syndicate_details:
+                    # Validate all syndicate usernames exist
+                    syndicate_usernames = list(syndicate_details.keys())
+                    existing_users = CustomUser.objects.filter(username__in=syndicate_usernames)
+                    existing_usernames = set(user.username for user in existing_users)
+                    
+                    missing_usernames = set(syndicate_usernames) - existing_usernames
+                    if missing_usernames:
+                        return Response({
+                            "error": f"Users not found: {', '.join(missing_usernames)}"
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                    
+                    # Check if all syndicators have accepted friend status with risk_taker
+                    # (except for the risk_taker themselves)
+                    non_friends = []
+                    for user in existing_users:
+                        # Skip friend validation if syndicator is the risk_taker themselves
+                        if user.username == risk_taker.username:
+                            continue
+                            
+                        # Check if there's an accepted friend request between risk_taker and syndicate member
+                        friend_request_exists = FriendRequest.objects.filter(
+                            Q(user_id=risk_taker, requested_id=user, status='accepted') |
+                            Q(user_id=user, requested_id=risk_taker, status='accepted')
+                        ).exists()
+                        
+                        if not friend_request_exists:
+                            non_friends.append(user.username)
+                    
+                    if non_friends:
+                        return Response({
+                            "error": f"Syndicator(s) {', '.join(non_friends)} are not accepted friends. Please ensure friend requests are accepted before creating transactions."
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                    
+                    # Create syndicators list with user IDs
+                    for user in existing_users:
+                        syndicators_list.append({
+                            'user_id': str(user.user_id),
+                            'username': user.username
+                        })
+                    
+                    # Validate that total amounts match splitwise details
+                    total_splitwise_principal = 0
+                    
+                    for username_key, details in syndicate_details.items():
+                        principal_amount = details.get('principal_amount', 0)
+                        interest_amount = details.get('interest', 0)
+                        total_splitwise_principal += float(principal_amount)
+                        
+                        # Check if each individual interest amount equals total_interest_amount
+                        if abs(float(total_interest_amount) - float(interest_amount)) > 0.01:
+                            return Response({
+                                "error": f"Interest amount for {username_key} ({interest_amount}) must equal total_interest_amount ({total_interest_amount}). All syndicators must have the same interest amount."
+                            }, status=status.HTTP_400_BAD_REQUEST)
+                    print("total_principal_amount", total_principal_amount)
+                    print("total_splitwise_principal", total_splitwise_principal)
+                    # Check if total principal matches sum of splitwise principal amounts
+                    if abs(float(total_principal_amount) - total_splitwise_principal) > 0.01:  # Using small tolerance for float comparison
+                        return Response({
+                            "error": f"Total principal amount ({total_principal_amount}) does not match sum of splitwise principal amounts ({total_splitwise_principal})"
+                        }, status=status.HTTP_400_BAD_REQUEST)
                 
                 # Create the transaction
                 new_transaction = Transactions.objects.create(
                     risk_taker_id=risk_taker,
                     syndicators=syndicators_list,
-                    total_prinicipal_amount=float(total_principal_amount),
+                    total_principal_amount=float(total_principal_amount),
                     total_interest=float(total_interest_amount),
                     start_date=date.today()  # You can modify this as needed
                 )
                 
-                # Create Splitwise entries for each syndicate member
-                splitwise_entries = []
-                for username_key, details in syndicate_details.items():
-                    principal_amount = details.get('prinicipal_amount', 0)  # Note: keeping your typo
-                    interest_amount = details.get('interest', 0)
-                    
-                    splitwise_entry = Splitwise.objects.create(
-                        transaction_id=new_transaction,
-                        principal_amount=float(principal_amount),
-                        interest_amount=float(interest_amount)
-                    )
-                    splitwise_entries.append(splitwise_entry)
+                # Create Splitwise entries only if there are syndicators
+                if syndicate_details:
+                    for username_key, details in syndicate_details.items():
+                        principal_amount = details.get('prinicpal_amount', 0)  # Fixed typo to match your payload
+                        interest_amount = details.get('interest', 0)
+                        
+                        splitwise_entry = Splitwise.objects.create(
+                            transaction_id=new_transaction,
+                            principal_amount=float(principal_amount),
+                            interest_amount=float(interest_amount)
+                        )
+                        splitwise_entries.append(splitwise_entry)
                 
-                # Return success response
-                return Response({
+                # Prepare response
+                response_data = {
                     "message": "Transaction created successfully",
                     "transaction_id": str(new_transaction.transaction_id),
                     "risk_taker": {
                         "user_id": str(risk_taker.user_id),
                         "username": risk_taker.username
                     },
-                    "total_principal_amount": new_transaction.total_prinicipal_amount,
+                    "total_principal_amount": new_transaction.total_principal_amount,
                     "total_interest": new_transaction.total_interest,
-                    "splitwise_entries_count": len(splitwise_entries)
-                }, status=status.HTTP_201_CREATED)
+                    "transaction_type": "syndicated" if syndicate_details else "solo"
+                }
+                
+                if syndicate_details:
+                    response_data["splitwise_entries_count"] = len(splitwise_entries)
+                else:
+                    response_data["note"] = "Solo transaction - risk taker is solely responsible"
+                
+                return Response(response_data, status=status.HTTP_201_CREATED)
                 
         except ValueError as e:
             return Response({
@@ -542,4 +591,3 @@ class CreateTransactionView(APIView):
             return Response({
                 "error": f"An unexpected error occurred: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
