@@ -437,33 +437,35 @@ class AllTransactionView(APIView):
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        username = request.query_params.get("username")
+        # Check if username parameter is provided (not allowed with JWT auth)
+        # Get the authenticated user from JWT token
         
-        if not username:
-            return Response({
-                "error": "Username parameter is required"
-            }, status=status.HTTP_400_BAD_REQUEST)
         
         try:
-            user = CustomUser.objects.get(username=username)
-            transactions = Transactions.objects.filter(risk_taker_id=user)
+            # Get all transactions for the authenticated user
+            transactions = Transactions.objects.filter(risk_taker_id=request.user)
             
             # Use your existing PortfolioSerializer
             serializer = PortfolioSerializer(transactions, many=True)
             
-            return Response({
+            response_data = {
+                "message": f"Transactions retrieved successfully for {request.user.username}",
+                "user": {
+                    "user_id": str(request.user.user_id),
+                    "username": request.user.username,
+                    "name": request.user.name or request.user.username
+                },
+                "transaction_count": len(serializer.data),
                 "transactions": serializer.data
-            }, status=status.HTTP_200_OK)
+            }
             
-        except CustomUser.DoesNotExist:
-            return Response({
-                "error": "User not found"
-            }, status=status.HTTP_404_NOT_FOUND)
+            return Response(response_data, status=status.HTTP_200_OK)
+            
         except Exception as e:
             return Response({
                 "error": f"An unexpected error occurred: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+            
 class CreateTransactionView(APIView):
     permission_classes = [IsAuthenticated]
     
