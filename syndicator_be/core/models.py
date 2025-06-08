@@ -9,14 +9,22 @@ class CustomUser(AbstractUser):
     phone_number = models.CharField(max_length=20, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     name = models.CharField(max_length=26, blank=True, null=True)
+    username = models.CharField(max_length=150, unique=True)
+    email = models.EmailField(unique=True)
 
     def __str__(self):
         return self.email
     
 class FriendList(models.Model):
     friend_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user_id = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='current_user')
-    mutual_friends = models.JSONField(default=list, blank=True)
+    user_id = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='friend_lists')
+    
+    # Many-to-Many relationship with CustomUser for mutual friends
+    mutual_friends = models.ManyToManyField(
+        CustomUser, 
+        blank=True, 
+        related_name='mutual_friend_of'
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
 class FriendRequest(models.Model):
@@ -37,7 +45,7 @@ class Transactions(models.Model):
     transaction_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     risk_taker_id = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='risk_taker')
     syndicators = models.JSONField(default=list, blank=True)
-    total_prinicipal_amount = models.FloatField(validators=[MinValueValidator(0)])
+    total_principal_amount = models.FloatField(validators=[MinValueValidator(0)])
     total_interest = models.FloatField(validators=[MinValueValidator(0)])
     created_at = models.DateTimeField(auto_now_add=True)
     start_date = models.DateField(blank=False)
