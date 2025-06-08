@@ -82,17 +82,15 @@ class PortfolioView(APIView):
             return Response({"error": "Transactions not found"}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 class SyndicateView(APIView):
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        username = request.query_params.get("username")  # Changed from request.data
-        
-        if not username:
-            return Response({"error": "Username parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+        # Get user directly from authenticated token
+        user = request.user
         
         try:
-            user = CustomUser.objects.get(username=username)
             friend_list = FriendList.objects.get(user_id=user)
             
             # Get the actual friends data
@@ -117,26 +115,29 @@ class SyndicateView(APIView):
                 "created_at": friend_list.created_at
             }
             
-            return Response(response_data, status=status.HTTP_200_OK)  # Changed status code
+            return Response(response_data, status=status.HTTP_200_OK)
             
-        except CustomUser.DoesNotExist:
-            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
         except FriendList.DoesNotExist:
-            return Response({"error": "Friend list not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({
+                "error": "Friend list not found for the authenticated user"
+            }, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+            return Response({
+                "error": f"An unexpected error occurred: {str(e)}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
 class AddMutualFriendView(APIView):
     permission_classes = [IsAuthenticated]
     
     def post(self, request):
-        username = request.data.get("username")
+        # Get username from authenticated user's token
+        username = request.user.username
         mutual_friend_name = request.data.get("mutual_friend_name")
         
         # Validate required fields
-        if not username or not mutual_friend_name:
+        if not mutual_friend_name:
             return Response({
-                "error": "Both username and mutual_friend_name are required"
+                "error": "mutual_friend_name is required"
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Check if user is trying to add themselves
@@ -147,8 +148,16 @@ class AddMutualFriendView(APIView):
         
         try:
             with transaction.atomic():
-                user = CustomUser.objects.get(username=username)
-                mutual_friend = CustomUser.objects.get(username=mutual_friend_name)
+                # Get the authenticated user (already verified by IsAuthenticated)
+                user = request.user
+                
+                # Get the mutual friend by username
+                try:
+                    mutual_friend = CustomUser.objects.get(username=mutual_friend_name)
+                except CustomUser.DoesNotExist:
+                    return Response({
+                        "error": f"Mutual friend with username '{mutual_friend_name}' not found"
+                    }, status=status.HTTP_404_NOT_FOUND)
                 
                 # Check if there's an accepted friend request between these users
                 # We need to check both directions: user->mutual_friend and mutual_friend->user
@@ -161,50 +170,30 @@ class AddMutualFriendView(APIView):
                     return Response({
                         "message": "These users are already friends through an accepted friend request."
                     }, status=status.HTTP_200_OK)
-                if not friend_request_exists:
-                    friend_request, created = FriendRequest.objects.get_or_create(user_id=user, requested_id=mutual_friend)
-                # Check if mutual friend is already in the list
-                # if friend_list.mutual_friends.filter(username=mutual_friend_name).exists():
-                #     return Response({
-                #         "message": "User is already in the mutual friends list",
-                #         "friend_list_id": str(friend_list.friend_id),
-                #         "user": username,
-                #         "mutual_friend": mutual_friend_name
-                #     }, status=status.HTTP_200_OK)
                 
-                # Add mutual friend to the list
-                # friend_list.mutual_friends.add(mutual_friend)
+                if not friend_request_exists:
+                    friend_request, created = FriendRequest.objects.get_or_create(
+                        user_id=user, 
+                        requested_id=mutual_friend
+                    )
                 
                 # Prepare response data
                 response_data = {
-                    "message": "Mutual friend added successfully",
+                    "message": "Friend request created successfully",
                     "friend_request_id": str(friend_request.request_id),
                     "user": username,
                     "mutual_friend": mutual_friend_name,
                     "status": friend_request.status,
-        
+                    "created": created
                 }
                 
                 return Response(response_data, status=status.HTTP_201_CREATED)
-                
-        except CustomUser.DoesNotExist:
-            # Check which user doesn't exist
-            try:
-                CustomUser.objects.get(username=username)
-                # If we reach here, the main user exists, so mutual friend doesn't exist
-                return Response({
-                    "error": f"Mutual friend with username '{mutual_friend_name}' not found"
-                }, status=status.HTTP_404_NOT_FOUND)
-            except CustomUser.DoesNotExist:
-                return Response({
-                    "error": f"User with username '{username}' not found"
-                }, status=status.HTTP_404_NOT_FOUND)
                 
         except Exception as e:
             return Response({
                 "error": f"An unexpected error occurred: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            
+
 class CheckFriendRequestStatusView(APIView):
     permission_classes = [IsAuthenticated]
     
@@ -470,18 +459,15 @@ class CreateTransactionView(APIView):
     permission_classes = [IsAuthenticated]
     
     def post(self, request):
+        # Get user directly from authenticated token
+        risk_taker = request.user
+        
         # Extract data from request
-        username = request.data.get("username")
         total_principal_amount = request.data.get("total_prinicpal_amount")  # Note: keeping your typo for consistency
         total_interest_amount = request.data.get("total_interest_amount")
         syndicate_details = request.data.get("syndicate_details", {})
         
         # Validation
-        if not username:
-            return Response({
-                "error": "Username is required"
-            }, status=status.HTTP_400_BAD_REQUEST)
-            
         if total_principal_amount is None or total_interest_amount is None:
             return Response({
                 "error": "total_prinicpal_amount and total_interest_amount are required"
@@ -494,9 +480,6 @@ class CreateTransactionView(APIView):
         
         try:
             with transaction.atomic():
-                # Get the risk taker user
-                risk_taker = CustomUser.objects.get(username=username)
-                
                 # Validate all syndicate usernames exist
                 syndicate_usernames = list(syndicate_details.keys())
                 existing_users = CustomUser.objects.filter(username__in=syndicate_usernames)
@@ -542,15 +525,15 @@ class CreateTransactionView(APIView):
                 return Response({
                     "message": "Transaction created successfully",
                     "transaction_id": str(new_transaction.transaction_id),
+                    "risk_taker": {
+                        "user_id": str(risk_taker.user_id),
+                        "username": risk_taker.username
+                    },
                     "total_principal_amount": new_transaction.total_prinicipal_amount,
                     "total_interest": new_transaction.total_interest,
                     "splitwise_entries_count": len(splitwise_entries)
                 }, status=status.HTTP_201_CREATED)
                 
-        except CustomUser.DoesNotExist:
-            return Response({
-                "error": f"User with username '{username}' not found"
-            }, status=status.HTTP_404_NOT_FOUND)
         except ValueError as e:
             return Response({
                 "error": f"Invalid data format: {str(e)}"
@@ -559,3 +542,4 @@ class CreateTransactionView(APIView):
             return Response({
                 "error": f"An unexpected error occurred: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
