@@ -212,24 +212,50 @@ class CheckFriendRequestStatusView(APIView):
         username = request.query_params.get("username")
         try:
             user = CustomUser.objects.get(username=username)
-            friend_request = FriendRequest.objects.get(user_id=user)
+            
+            # Find ANY friend request involving this user (sender OR receiver)
+            friend_requests = FriendRequest.objects.filter(
+                Q(user_id=user) | Q(requested_id=user)
+            ).order_by('-created_at')  # Order by most recent first
+            
+            if not friend_requests.exists():
+                return Response({
+                    "error": "Friend request not found"
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Build list of all requests with details
+            requests_data = []
+            for friend_request in friend_requests:
+                request_info = {
+                    "request_id": str(friend_request.request_id),
+                    "requested_id": str(friend_request.requested_id.user_id),
+                    "requested_username": friend_request.requested_id.username,
+                    "requested_name": friend_request.requested_id.name or friend_request.requested_id.username,
+                    "user_id": str(friend_request.user_id.user_id),
+                    "sender_username": friend_request.user_id.username,
+                    "sender_name": friend_request.user_id.name or friend_request.user_id.username,
+                    "status": friend_request.status,
+                    "created_at": friend_request.created_at.isoformat(),
+                    "request_type": "sent_by_target" if friend_request.user_id == user else "received_by_target"
+                }
+                requests_data.append(request_info)
+            
             return Response({
-                "message": "User is in the mutual friends list",
-                "request_id": str(friend_request.request_id),
-                "requested_id": str(friend_request.requested_id),
-                "user_id": str(friend_request.user_id),
-                "status": friend_request.status,
-                "user": username
+                "message": f"Found {len(requests_data)} friend requests involving {username}",
+                "user": username,
+                "user_id": str(user.user_id),
+                "total_requests": len(requests_data),
+                "requests": requests_data
             }, status=status.HTTP_200_OK)
-        except FriendRequest.DoesNotExist:
+            
+        except CustomUser.DoesNotExist:
             return Response({
-                "error": "Friend request not found"
+                "error": "User not found"
             }, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({
                 "error": f"An unexpected error occurred: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            
 
 class UpdateFriendRequestStatusView(APIView):
     permission_classes = [IsAuthenticated]
