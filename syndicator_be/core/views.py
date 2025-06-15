@@ -462,7 +462,7 @@ class AllTransactionView(APIView):
             return Response({
                 "error": f"An unexpected error occurred: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            
+
 class CreateTransactionView(APIView):
     permission_classes = [IsAuthenticated]
     
@@ -471,7 +471,7 @@ class CreateTransactionView(APIView):
         risk_taker = request.user
         
         # Extract data from request
-        total_principal_amount = request.data.get("total_principal_amount")  # Note: keeping your typo for consistency
+        total_principal_amount = request.data.get("total_principal_amount")
         total_interest_amount = request.data.get("total_interest_amount")
         syndicate_details = request.data.get("syndicate_details", {})
         
@@ -541,10 +541,9 @@ class CreateTransactionView(APIView):
                             return Response({
                                 "error": f"Interest amount for {username_key} ({interest_amount}) must equal total_interest_amount ({total_interest_amount}). All syndicators must have the same interest amount."
                             }, status=status.HTTP_400_BAD_REQUEST)
-                    print("total_principal_amount", total_principal_amount)
-                    print("total_splitwise_principal", total_splitwise_principal)
+                    
                     # Check if total principal matches sum of splitwise principal amounts
-                    if abs(float(total_principal_amount) - total_splitwise_principal) > 0.01:  # Using small tolerance for float comparison
+                    if abs(float(total_principal_amount) - total_splitwise_principal) > 0.01:
                         return Response({
                             "error": f"Total principal amount ({total_principal_amount}) does not match sum of splitwise principal amounts ({total_splitwise_principal})"
                         }, status=status.HTTP_400_BAD_REQUEST)
@@ -555,21 +554,35 @@ class CreateTransactionView(APIView):
                     syndicators=syndicators_list,
                     total_principal_amount=float(total_principal_amount),
                     total_interest=float(total_interest_amount),
-                    start_date=date.today()  # You can modify this as needed
+                    start_date=date.today()
                 )
                 
                 # Create Splitwise entries only if there are syndicators
                 if syndicate_details:
+                    # Create a mapping of username to user object for easier lookup
+                    username_to_user = {user.username: user for user in existing_users}
+                    
                     for username_key, details in syndicate_details.items():
-                        principal_amount = details.get('prinicpal_amount', 0)  # Fixed typo to match your payload
+                        principal_amount = details.get('principal_amount', 0)  # Fixed typo
                         interest_amount = details.get('interest', 0)
                         
+                        # Get the user object for this username
+                        syndicator_user = username_to_user[username_key]
+                        
+                        # Create splitwise entry with user association
                         splitwise_entry = Splitwise.objects.create(
                             transaction_id=new_transaction,
+                            syndicator_id=syndicator_user,  # NEW: Associate with specific user
                             principal_amount=float(principal_amount),
                             interest_amount=float(interest_amount)
                         )
-                        splitwise_entries.append(splitwise_entry)
+                        splitwise_entries.append({
+                            'splitwise_id': str(splitwise_entry.splitwise_id),
+                            'syndicator_username': syndicator_user.username,
+                            'syndicator_user_id': str(syndicator_user.user_id),
+                            'principal_amount': splitwise_entry.principal_amount,
+                            'interest_amount': splitwise_entry.interest_amount
+                        })
                 
                 # Prepare response
                 response_data = {
@@ -586,6 +599,7 @@ class CreateTransactionView(APIView):
                 
                 if syndicate_details:
                     response_data["splitwise_entries_count"] = len(splitwise_entries)
+                    response_data["splitwise_entries"] = splitwise_entries
                 else:
                     response_data["note"] = "Solo transaction - risk taker is solely responsible"
                 
