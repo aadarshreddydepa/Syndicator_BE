@@ -613,3 +613,162 @@ class CreateTransactionView(APIView):
             return Response({
                 "error": f"An unexpected error occurred: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
+class UserSplitwiseView(APIView):
+    """Get all splitwise entries for the authenticated user"""
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            user = request.user
+            
+            # Get all splitwise entries where the user is a syndicator
+            splitwise_entries = Splitwise.objects.filter(syndicator_id=user).select_related(
+                'transaction_id', 
+                'transaction_id__risk_taker_id'
+            ).order_by('-created_at')
+            
+            if not splitwise_entries.exists():
+                return Response({
+                    "message": f"No splitwise entries found for {user.username}",
+                    "user": {
+                        "user_id": str(user.user_id),
+                        "username": user.username
+                    },
+                    "splitwise_count": 0,
+                    "splitwise_entries": []
+                }, status=status.HTTP_200_OK)
+            
+            # Serialize the data
+            serialized_entries = []
+            total_principal_committed = 0
+            total_interest_earning = 0
+            
+            for entry in splitwise_entries:
+                total_principal_committed += entry.principal_amount
+                total_interest_earning += entry.interest_amount
+                
+                serialized_entries.append({
+                    "splitwise_id": str(entry.splitwise_id),
+                    "transaction_id": str(entry.transaction_id.transaction_id),
+                    "risk_taker": {
+                        "user_id": str(entry.transaction_id.risk_taker_id.user_id),
+                        "username": entry.transaction_id.risk_taker_id.username,
+                        "name": entry.transaction_id.risk_taker_id.name
+                    },
+                    "principal_amount": entry.principal_amount,
+                    "interest_amount": entry.interest_amount,
+                    "transaction_start_date": entry.transaction_id.start_date.isoformat(),
+                    "splitwise_created_at": entry.created_at.isoformat()
+                })
+            
+            response_data = {
+                "message": f"Splitwise entries retrieved for {user.username}",
+                "user": {
+                    "user_id": str(user.user_id),
+                    "username": user.username,
+                    "name": user.name
+                },
+                "summary": {
+                    "total_principal_committed": total_principal_committed,
+                    "total_interest_earning": total_interest_earning,
+                    "splitwise_count": len(serialized_entries)
+                },
+                "splitwise_entries": serialized_entries
+            }
+            
+            return Response(response_data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({
+                "error": f"An unexpected error occurred: {str(e)}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class TransactionSplitwiseView(APIView):
+    """Get all splitwise entries for a specific transaction"""
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, transaction_id):
+        try:
+            user = request.user
+            
+            # Verify the transaction exists and the user has access to it
+            # (either as risk_taker or as a syndicator)
+            try:
+                transaction = Transactions.objects.get(transaction_id=transaction_id)
+            except Transactions.DoesNotExist:
+                return Response({
+                    "error": "Transaction not found"
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Check if user has permission to view this transaction
+            user_has_access = False
+            
+            # Check if user is the risk taker
+            if transaction.risk_taker_id == user:
+                user_has_access = True
+            else:
+                # Check if user is one of the syndicators
+                user_splitwise = Splitwise.objects.filter(
+                    transaction_id=transaction,
+                    syndicator_id=user
+                ).exists()
+                if user_splitwise:
+                    user_has_access = True
+            
+            if not user_has_access:
+                return Response({
+                    "error": "You don't have permission to view this transaction"
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            # Get all splitwise entries for this transaction
+            splitwise_entries = Splitwise.objects.filter(
+                transaction_id=transaction
+            ).select_related('syndicator_id').order_by('created_at')
+            
+            # Serialize the data
+            serialized_entries = []
+            for entry in splitwise_entries:
+                serialized_entries.append({
+                    "splitwise_id": str(entry.splitwise_id),
+                    "syndicator": {
+                        "user_id": str(entry.syndicator_id.user_id),
+                        "username": entry.syndicator_id.username,
+                        "name": entry.syndicator_id.name,
+                        "email": entry.syndicator_id.email
+                    },
+                    "principal_amount": entry.principal_amount,
+                    "interest_amount": entry.interest_amount,
+                    "created_at": entry.created_at.isoformat()
+                })
+            
+            response_data = {
+                "message": "Transaction splitwise details retrieved successfully",
+                "transaction": {
+                    "transaction_id": str(transaction.transaction_id),
+                    "risk_taker": {
+                        "user_id": str(transaction.risk_taker_id.user_id),
+                        "username": transaction.risk_taker_id.username,
+                        "name": transaction.risk_taker_id.name
+                    },
+                    "total_principal_amount": transaction.total_principal_amount,
+                    "total_interest": transaction.total_interest,
+                    "start_date": transaction.start_date.isoformat(),
+                    "created_at": transaction.created_at.isoformat()
+                },
+                "splitwise_summary": {
+                    "total_splits": len(serialized_entries),
+                    "total_principal_split": sum(entry.principal_amount for entry in splitwise_entries),
+                    "total_interest_split": sum(entry.interest_amount for entry in splitwise_entries)
+                },
+                "splitwise_entries": serialized_entries
+            }
+            
+            return Response(response_data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({
+                "error": f"An unexpected error occurred: {str(e)}"
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
