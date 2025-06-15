@@ -65,23 +65,31 @@ class LoginView(APIView):
     
 class PortfolioView(APIView):
     permission_classes = [IsAuthenticated]
+    
     def get(self, request):
-        username= request.data.get("username")
         try:
-            user = CustomUser.objects.get(username=username)
+            # Get the authenticated user directly from request
+            user = request.user
+            
+            # Get transactions for the authenticated user
             transactions = Transactions.objects.filter(risk_taker_id=user)
+            
             t_principal_amount = 0
             t_interest_amount = 0
+            
             for transaction in transactions:
                 t_principal_amount += transaction.total_principal_amount
                 t_interest_amount += transaction.total_principal_amount * transaction.total_interest / 100
-            return Response({"total_principal_amount": t_principal_amount, "total_interest_amount": t_interest_amount}, status=status.HTTP_201_CREATED)
-        except CustomUser.DoesNotExist:
-            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
-        except Transactions.DoesNotExist:
-            return Response({"error": "Transactions not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+            return Response({
+                "total_principal_amount": t_principal_amount, 
+                "total_interest_amount": t_interest_amount
+            }, status=status.HTTP_200_OK)  # Changed to 200 OK for GET request
+            
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({
+                "error": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class SyndicateView(APIView):
     permission_classes = [IsAuthenticated]
