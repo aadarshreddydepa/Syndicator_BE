@@ -53,6 +53,12 @@ class Transactions(models.Model):
 class Splitwise(models.Model):
     splitwise_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     transaction_id = models.ForeignKey(Transactions, on_delete=models.CASCADE, related_name='splitwise_entries')
+    # NEW: Associate each split with a specific user
+    syndicator_id = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='splitwise_entries')
     principal_amount = models.FloatField(validators=[MinValueValidator(0)])
     interest_amount = models.FloatField(validators=[MinValueValidator(0)])
     created_at = models.DateTimeField(auto_now_add=True)
+    
+    
+    def __str__(self):
+        return f"Split for {self.syndicator_id.username} in transaction {self.transaction_id.transaction_id}"
