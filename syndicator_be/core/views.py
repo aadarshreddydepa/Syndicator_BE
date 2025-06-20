@@ -68,23 +68,42 @@ class PortfolioView(APIView):
     
     def get(self, request):
         try:
-            # Get the authenticated user directly from request
             user = request.user
             
-            # Get transactions for the authenticated user
-            transactions = Transactions.objects.filter(risk_taker_id=user)
+            # Get all splitwise entries where user is a syndicate member
+            splitwise_entries = Splitwise.objects.filter(syndicator_id=user)
             
-            t_principal_amount = 0
-            t_interest_amount = 0
+            # Get transactions where user is risk taker
+            risk_taker_transactions = Transactions.objects.filter(risk_taker_id=user)
             
-            for transaction in transactions:
-                t_principal_amount += transaction.total_principal_amount
-                t_interest_amount += transaction.total_principal_amount * transaction.total_interest / 100
+            # Calculate total amounts
+            total_principal = 0
+            total_interest = 0
+            
+            # Add amounts from risk taker transactions
+            for transaction in risk_taker_transactions:
+                total_principal += transaction.total_principal_amount
+                total_interest += transaction.total_principal_amount * transaction.total_interest / 100
+            
+            # Add amounts from splitwise entries (syndicate member transactions)
+            for entry in splitwise_entries:
+                total_principal += entry.principal_amount
+                total_interest += entry.interest_amount
             
             return Response({
-                "total_principal_amount": t_principal_amount, 
-                "total_interest_amount": t_interest_amount
-            }, status=status.HTTP_200_OK)  # Changed to 200 OK for GET request
+                "total_principal_amount": total_principal,
+                "total_interest_amount": total_interest,
+                "breakdown": {
+                    "as_risk_taker": {
+                        "principal": sum(t.total_principal_amount for t in risk_taker_transactions),
+                        "interest": sum(t.total_principal_amount * t.total_interest / 100 for t in risk_taker_transactions)
+                    },
+                    "as_syndicate_member": {
+                        "principal": sum(entry.principal_amount for entry in splitwise_entries),
+                        "interest": sum(entry.interest_amount for entry in splitwise_entries)
+                    }
+                }
+            }, status=status.HTTP_200_OK)
             
         except Exception as e:
             return Response({
@@ -434,16 +453,35 @@ class AllTransactionView(APIView):
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        # Check if username parameter is provided (not allowed with JWT auth)
-        # Get the authenticated user from JWT token
-        
-        
         try:
-            # Get all transactions for the authenticated user
-            transactions = Transactions.objects.filter(risk_taker_id=request.user)
+            # Get all transactions where user is either risk taker or syndicate member
+            # First get transactions where user is risk taker
+            risk_taker_transactions = Transactions.objects.filter(risk_taker_id=request.user)
             
-            # Use your existing PortfolioSerializer
-            serializer = PortfolioSerializer(transactions, many=True)
+            # Then get transactions where user is syndicate member
+            splitwise_entries = Splitwise.objects.filter(syndicator_id=request.user)
+            syndicate_transactions = Transactions.objects.filter(
+                transaction_id__in=splitwise_entries.values('transaction_id')
+            )
+            
+            # Combine both sets of transactions
+            all_transactions = list(risk_taker_transactions) + list(syndicate_transactions)
+            
+            # Remove duplicates (same transaction appearing in both lists)
+            unique_transactions = []
+            seen_transaction_ids = set()
+            
+            for transaction in all_transactions:
+                if transaction.transaction_id not in seen_transaction_ids:
+                    unique_transactions.append(transaction)
+                    seen_transaction_ids.add(transaction.transaction_id)
+            
+            # Serialize the data
+            serializer = PortfolioSerializer(unique_transactions, many=True)
+            
+            # Count transactions where user is risk taker vs syndicate member
+            risk_taker_count = len(risk_taker_transactions)
+            syndicate_count = len(syndicate_transactions)
             
             response_data = {
                 "message": f"Transactions retrieved successfully for {request.user.username}",
@@ -452,7 +490,11 @@ class AllTransactionView(APIView):
                     "username": request.user.username,
                     "name": request.user.name or request.user.username
                 },
-                "transaction_count": len(serializer.data),
+                "transaction_counts": {
+                    "total": len(unique_transactions),
+                    "as_risk_taker": risk_taker_count,
+                    "as_syndicate_member": syndicate_count
+                },
                 "transactions": serializer.data
             }
             
