@@ -47,8 +47,6 @@ class Transactions(models.Model):
     syndicators = models.JSONField(default=list, blank=True)
     total_principal_amount = models.FloatField(validators=[MinValueValidator(0)])
     total_interest = models.FloatField(validators=[MinValueValidator(0)])
-    risk_taker_commission = models.FloatField(validators=[MinValueValidator(0)], default=0)
-    risk_taker_flag = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     start_date = models.DateField(blank=False)
 
