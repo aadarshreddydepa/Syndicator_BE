@@ -47,6 +47,9 @@ class Transactions(models.Model):
     syndicators = models.JSONField(default=list, blank=True)
     total_principal_amount = models.FloatField(validators=[MinValueValidator(0)])
     total_interest = models.FloatField(validators=[MinValueValidator(0)])
+    # NEW FIELDS FOR COMMISSION
+    risk_taker_commission = models.FloatField(validators=[MinValueValidator(0)], default=0)
+    risk_taker_flag = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     start_date = models.DateField(blank=False)
 
@@ -56,9 +59,21 @@ class Splitwise(models.Model):
     # NEW: Associate each split with a specific user
     syndicator_id = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='splitwise_entries')
     principal_amount = models.FloatField(validators=[MinValueValidator(0)])
-    interest_amount = models.FloatField(validators=[MinValueValidator(0)])
+    interest_amount = models.FloatField(validators=[MinValueValidator(0)])  # This stores ORIGINAL interest
     created_at = models.DateTimeField(auto_now_add=True)
     
+    def get_interest_after_commission(self):
+        """Calculate interest after commission deduction"""
+        if not self.transaction_id.risk_taker_flag:
+            return self.interest_amount
+        
+        # Calculate commission per syndicator
+        total_syndicators = self.transaction_id.splitwise_entries.count()
+        if total_syndicators == 0:
+            return self.interest_amount
+            
+        commission_per_syndicator = self.transaction_id.risk_taker_commission / total_syndicators
+        return max(0, self.interest_amount - commission_per_syndicator)
     
     def __str__(self):
         return f"Split for {self.syndicator_id.username} in transaction {self.transaction_id.transaction_id}"
