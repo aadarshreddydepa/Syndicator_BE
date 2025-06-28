@@ -28,6 +28,7 @@ class SplitwiseSerializer(serializers.ModelSerializer):
     original_interest = serializers.FloatField(source='interest_amount', read_only=True)
     interest_after_commission = serializers.SerializerMethodField()
     commission_deducted = serializers.SerializerMethodField()
+    is_risk_taker = serializers.SerializerMethodField()
     
     class Meta:
         model = Splitwise
@@ -41,6 +42,7 @@ class SplitwiseSerializer(serializers.ModelSerializer):
             'original_interest',
             'interest_after_commission',
             'commission_deducted',
+            'is_risk_taker',
             'created_at'
         ]
     
@@ -48,14 +50,10 @@ class SplitwiseSerializer(serializers.ModelSerializer):
         return obj.get_interest_after_commission()
     
     def get_commission_deducted(self, obj):
-        if not obj.transaction_id.risk_taker_flag:
-            return 0
-        
-        total_syndicators = obj.transaction_id.splitwise_entries.count()
-        if total_syndicators == 0:
-            return 0
-            
-        return obj.transaction_id.risk_taker_commission / total_syndicators
+        return obj.get_commission_deducted()
+    
+    def get_is_risk_taker(self, obj):
+        return obj.syndicator_id == obj.transaction_id.risk_taker_id
 
 # Updated Portfolio Serializer with Commission Support
 class PortfolioSerializer(serializers.ModelSerializer):
@@ -90,4 +88,14 @@ class PortfolioSerializer(serializers.ModelSerializer):
         """Calculate total commission earned by risk taker"""
         if not obj.risk_taker_flag:
             return 0
-        return obj.risk_taker_commission
+        
+        # Calculate commission as percentage of total interest from syndicators excluding risk taker
+        syndicators_excluding_risk_taker = obj.splitwise_entries.exclude(
+            syndicator_id=obj.risk_taker_id
+        )
+        
+        if syndicators_excluding_risk_taker.count() == 0:
+            return 0
+        
+        total_interest_for_commission = sum(entry.interest_amount for entry in syndicators_excluding_risk_taker)
+        return (obj.risk_taker_commission / 100) * total_interest_for_commission
