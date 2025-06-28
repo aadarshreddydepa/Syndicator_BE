@@ -89,13 +89,9 @@ class PortfolioSerializer(serializers.ModelSerializer):
         if not obj.risk_taker_flag:
             return 0
         
-        # Calculate commission as percentage of total interest from syndicators excluding risk taker
-        syndicators_excluding_risk_taker = obj.splitwise_entries.exclude(
-            syndicator_id=obj.risk_taker_id
-        )
+        # Sum up all commission deducted from syndicators (excluding risk taker)
+        total_commission = 0
+        for entry in obj.splitwise_entries.exclude(syndicator_id=obj.risk_taker_id):
+            total_commission += entry.get_commission_deducted()
         
-        if syndicators_excluding_risk_taker.count() == 0:
-            return 0
-        
-        total_interest_for_commission = sum(entry.interest_amount for entry in syndicators_excluding_risk_taker)
-        return (obj.risk_taker_commission / 100) * total_interest_for_commission
+        return total_commission

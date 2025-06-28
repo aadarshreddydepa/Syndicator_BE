@@ -65,32 +65,16 @@ class Splitwise(models.Model):
     def get_interest_after_commission(self):
         """Calculate interest after commission deduction"""
         if not self.transaction_id.risk_taker_flag:
-            return self.interest_amount
-        
-        # Get all syndicators excluding the risk taker (they don't pay commission to themselves)
-        syndicators_excluding_risk_taker = self.transaction_id.splitwise_entries.exclude(
-            syndicator_id=self.transaction_id.risk_taker_id
-        )
-        
-        # If no syndicators excluding risk taker, return original interest
-        if syndicators_excluding_risk_taker.count() == 0:
-            return self.interest_amount
-        
-        # Calculate total interest available for commission (from syndicators excluding risk taker)
-        total_interest_for_commission = sum(entry.interest_amount for entry in syndicators_excluding_risk_taker)
-        
-        # Calculate commission amount as percentage of total interest
-        commission_amount = (self.transaction_id.risk_taker_commission / 100) * total_interest_for_commission
-        
-        # Calculate commission per syndicator (excluding risk taker)
-        commission_per_syndicator = commission_amount / syndicators_excluding_risk_taker.count()
+            return self.principal_amount * self.interest_amount / 100
         
         # If this entry is for the risk taker, they don't pay commission to themselves
         if self.syndicator_id == self.transaction_id.risk_taker_id:
-            return self.interest_amount
+            return self.principal_amount * self.interest_amount / 100
         
-        # For other syndicators, deduct commission
-        return max(0, self.interest_amount - commission_per_syndicator)
+        # Calculate actual interest amount for this syndicator
+        actual_interest_amount = self.principal_amount * self.interest_amount / 100
+        commission_amount = (self.transaction_id.risk_taker_commission / 100) * actual_interest_amount
+        return max(0, actual_interest_amount - commission_amount)
     
     def get_commission_deducted(self):
         """Get the commission amount deducted from this entry"""
@@ -101,21 +85,9 @@ class Splitwise(models.Model):
         if self.syndicator_id == self.transaction_id.risk_taker_id:
             return 0
         
-        # Get all syndicators excluding the risk taker
-        syndicators_excluding_risk_taker = self.transaction_id.splitwise_entries.exclude(
-            syndicator_id=self.transaction_id.risk_taker_id
-        )
-        
-        if syndicators_excluding_risk_taker.count() == 0:
-            return 0
-        
-        # Calculate total interest available for commission
-        total_interest_for_commission = sum(entry.interest_amount for entry in syndicators_excluding_risk_taker)
-        
-        # Calculate commission amount as percentage of total interest
-        commission_amount = (self.transaction_id.risk_taker_commission / 100) * total_interest_for_commission
-        
-        return commission_amount / syndicators_excluding_risk_taker.count()
+        actual_interest_amount = self.principal_amount * self.interest_amount / 100
+        commission_amount = (self.transaction_id.risk_taker_commission / 100) * actual_interest_amount
+        return commission_amount
     
     def __str__(self):
         return f"Split for {self.syndicator_id.username} in transaction {self.transaction_id.transaction_id}"

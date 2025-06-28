@@ -113,8 +113,10 @@ class PortfolioView(APIView):
                     risk_taker_interest += transaction.total_interest
                     risk_taker_principal += transaction.total_principal_amount
                 
+                # Calculate commission earned by summing up commission deducted from syndicators
                 if transaction.risk_taker_flag:
-                    total_commission_earned += transaction.risk_taker_commission
+                    for entry in transaction.splitwise_entries.exclude(syndicator_id=user):
+                        total_commission_earned += entry.get_commission_deducted()
             
             # Calculate totals
             total_principal = syndicate_principal + risk_taker_principal
