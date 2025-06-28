@@ -63,6 +63,8 @@ class LoginView(APIView):
         return Response({"error": "Invalid credentials"}, status=status.HTTP_400_BAD_REQUEST)
     
     
+
+# Updated PortfolioView with Commission Logic
 class PortfolioView(APIView):
     permission_classes = [IsAuthenticated]
     
@@ -76,31 +78,67 @@ class PortfolioView(APIView):
             # Get transactions where user is risk taker
             risk_taker_transactions = Transactions.objects.filter(risk_taker_id=user)
             
-            # Calculate total amounts
-            total_principal = 0
-            total_interest = 0
+            # Calculate amounts for syndicate member role
+            syndicate_principal = 0
+            syndicate_original_interest = 0
+            syndicate_interest_after_commission = 0
             
-            # Add amounts from risk taker transactions
-            for transaction in risk_taker_transactions:
-                total_principal += transaction.total_principal_amount
-                total_interest += transaction.total_principal_amount * transaction.total_interest / 100
-            
-            # Add amounts from splitwise entries (syndicate member transactions)
             for entry in splitwise_entries:
-                total_principal += entry.principal_amount
-                total_interest += entry.interest_amount
+                syndicate_principal += entry.principal_amount
+                syndicate_original_interest += entry.interest_amount
+                syndicate_interest_after_commission += entry.get_interest_after_commission()
+            
+            # Calculate amounts for risk taker role
+            risk_taker_principal = 0
+            risk_taker_interest = 0
+            total_commission_earned = 0
+            
+            for transaction in risk_taker_transactions:
+                # For risk taker transactions, the total_interest is already the absolute amount
+                # We need to calculate how much interest the risk taker actually gets
+                # This depends on whether they're also a syndicator in the same transaction
+                
+                # Get the risk taker's splitwise entry for this transaction (if any)
+                risk_taker_splitwise = Splitwise.objects.filter(
+                    transaction_id=transaction,
+                    syndicator_id=user
+                ).first()
+                
+                if risk_taker_splitwise:
+                    # Risk taker is also a syndicator - they get their splitwise interest
+                    risk_taker_interest += risk_taker_splitwise.get_interest_after_commission()
+                    # Don't add principal here as it's already counted in syndicate_principal
+                else:
+                    # Risk taker is not a syndicator - they get the full transaction interest
+                    risk_taker_interest += transaction.total_interest
+                    risk_taker_principal += transaction.total_principal_amount
+                
+                # Calculate commission earned by summing up commission deducted from syndicators
+                if transaction.risk_taker_flag:
+                    for entry in transaction.splitwise_entries.exclude(syndicator_id=user):
+                        total_commission_earned += entry.get_commission_deducted()
+            
+            # Calculate totals
+            total_principal = syndicate_principal + risk_taker_principal
+            total_original_interest = syndicate_original_interest + risk_taker_interest
+            total_final_interest = syndicate_interest_after_commission + risk_taker_interest + total_commission_earned
             
             return Response({
                 "total_principal_amount": total_principal,
-                "total_interest_amount": total_interest,
+                "total_original_interest": total_original_interest,
+                "total_interest_after_commission": total_final_interest,
+                "total_commission_impact": total_commission_earned - (syndicate_original_interest - syndicate_interest_after_commission),
                 "breakdown": {
                     "as_risk_taker": {
-                        "principal": sum(t.total_principal_amount for t in risk_taker_transactions),
-                        "interest": sum(t.total_principal_amount * t.total_interest / 100 for t in risk_taker_transactions)
+                        "principal": risk_taker_principal,
+                        "interest": risk_taker_interest,  # Risk taker gets interest based on their role
+                        "commission_earned": total_commission_earned
                     },
                     "as_syndicate_member": {
-                        "principal": sum(entry.principal_amount for entry in splitwise_entries),
-                        "interest": sum(entry.interest_amount for entry in splitwise_entries)
+                        "principal": syndicate_principal,
+                        "original_interest": syndicate_original_interest,
+                        "interest_after_commission": syndicate_interest_after_commission,
+                        "commission_paid": syndicate_original_interest - syndicate_interest_after_commission
                     }
                 }
             }, status=status.HTTP_200_OK)
@@ -505,6 +543,7 @@ class AllTransactionView(APIView):
                 "error": f"An unexpected error occurred: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+# Updated CreateTransactionView with Commission Support
 class CreateTransactionView(APIView):
     permission_classes = [IsAuthenticated]
     
@@ -517,11 +556,25 @@ class CreateTransactionView(APIView):
         total_interest_amount = request.data.get("total_interest_amount")
         syndicate_details = request.data.get("syndicate_details", {})
         
+        # NEW: Commission-related fields
+        risk_taker_flag = request.data.get("risk_taker_flag", False)
+        risk_taker_flag = str(risk_taker_flag).lower() in ("true", "1", "yes")
+        risk_taker_commission = request.data.get("risk_taker_commission", 0)
+        
         # Validation
         if total_principal_amount is None or total_interest_amount is None:
             return Response({
                 "error": "total_principal_amount and total_interest_amount are required"
             }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Commission validation
+        if risk_taker_flag and (float(risk_taker_commission) <= 0 or float(risk_taker_commission) > 100):
+            return Response({
+                "error": "risk_taker_commission must be between 0 and 100 when risk_taker_flag is true"
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not risk_taker_flag:
+            risk_taker_commission = 0
         
         try:
             with transaction.atomic():
@@ -541,15 +594,12 @@ class CreateTransactionView(APIView):
                             "error": f"Users not found: {', '.join(missing_usernames)}"
                         }, status=status.HTTP_400_BAD_REQUEST)
                     
-                    # Check if all syndicators have accepted friend status with risk_taker
-                    # (except for the risk_taker themselves)
+                    # Check friend relationships (same as before)
                     non_friends = []
                     for user in existing_users:
-                        # Skip friend validation if syndicator is the risk_taker themselves
                         if user.username == risk_taker.username:
                             continue
                             
-                        # Check if there's an accepted friend request between risk_taker and syndicate member
                         friend_request_exists = FriendRequest.objects.filter(
                             Q(user_id=risk_taker, requested_id=user, status='accepted') |
                             Q(user_id=user, requested_id=risk_taker, status='accepted')
@@ -560,7 +610,7 @@ class CreateTransactionView(APIView):
                     
                     if non_friends:
                         return Response({
-                            "error": f"Syndicator(s) {', '.join(non_friends)} are not accepted friends. Please ensure friend requests are accepted before creating transactions."
+                            "error": f"Syndicator(s) {', '.join(non_friends)} are not accepted friends."
                         }, status=status.HTTP_400_BAD_REQUEST)
                     
                     # Create syndicators list with user IDs
@@ -570,7 +620,13 @@ class CreateTransactionView(APIView):
                             'username': user.username
                         })
                     
-                    # Validate that total amounts match splitwise details
+                    # Validate commission doesn't exceed total interest for syndicated transactions
+                    if risk_taker_flag and len(syndicate_details) > 0:
+                        # Commission is now a percentage (0-100), so no need to validate against absolute amounts
+                        # The validation is already done above (0-100 range)
+                        pass
+                    
+                    # Validate splitwise amounts
                     total_splitwise_principal = 0
                     
                     for username_key, details in syndicate_details.items():
@@ -584,47 +640,89 @@ class CreateTransactionView(APIView):
                                 "error": f"Interest amount for {username_key} ({interest_amount}) must equal total_interest_amount ({total_interest_amount}). All syndicators must have the same interest amount."
                             }, status=status.HTTP_400_BAD_REQUEST)
                     
-                    # Check if total principal matches sum of splitwise principal amounts
+                    # Check if total principal matches
                     if abs(float(total_principal_amount) - total_splitwise_principal) > 0.01:
                         return Response({
                             "error": f"Total principal amount ({total_principal_amount}) does not match sum of splitwise principal amounts ({total_splitwise_principal})"
                         }, status=status.HTTP_400_BAD_REQUEST)
                 
-                # Create the transaction
+                # Create the transaction with commission fields
                 new_transaction = Transactions.objects.create(
                     risk_taker_id=risk_taker,
                     syndicators=syndicators_list,
                     total_principal_amount=float(total_principal_amount),
                     total_interest=float(total_interest_amount),
+                    risk_taker_flag=risk_taker_flag,
+                    risk_taker_commission=float(risk_taker_commission),
                     start_date=date.today()
                 )
                 
-                # Create Splitwise entries only if there are syndicators
-                if syndicate_details:
-                    # Create a mapping of username to user object for easier lookup
+                # CASE 1: No syndicate details - Create single splitwise entry for risk taker
+                if not syndicate_details:
+                    # Auto-create splitwise entry for risk taker
+                    splitwise_entry = Splitwise.objects.create(
+                        transaction_id=new_transaction,
+                        syndicator_id=risk_taker,
+                        principal_amount=float(total_principal_amount),
+                        interest_amount=float(total_interest_amount)
+                    )
+                    
+                    splitwise_entries.append({
+                        'splitwise_id': str(splitwise_entry.splitwise_id),
+                        'syndicator_username': risk_taker.username,
+                        'syndicator_user_id': str(risk_taker.user_id),
+                        'principal_amount': splitwise_entry.principal_amount,
+                        'original_interest': splitwise_entry.interest_amount,
+                        'interest_after_commission': splitwise_entry.get_interest_after_commission(),
+                        'commission_deducted': splitwise_entry.get_commission_deducted()
+                    })
+                    
+                    # Add risk taker to syndicators list for response
+                    syndicators_list.append({
+                        'user_id': str(risk_taker.user_id),
+                        'username': risk_taker.username
+                    })
+                
+                # CASE 2, 3, 4: Create Splitwise entries for provided syndicate details
+                else:
                     username_to_user = {user.username: user for user in existing_users}
                     
                     for username_key, details in syndicate_details.items():
-                        principal_amount = details.get('principal_amount', 0)  # Fixed typo
-                        interest_amount = details.get('interest', 0)
+                        principal_amount = details.get('principal_amount', 0)
+                        interest_amount = details.get('interest', 0)  # Original interest
                         
-                        # Get the user object for this username
                         syndicator_user = username_to_user[username_key]
                         
-                        # Create splitwise entry with user association
+                        # Store original interest in DB
                         splitwise_entry = Splitwise.objects.create(
                             transaction_id=new_transaction,
-                            syndicator_id=syndicator_user,  # NEW: Associate with specific user
+                            syndicator_id=syndicator_user,
                             principal_amount=float(principal_amount),
-                            interest_amount=float(interest_amount)
+                            interest_amount=float(interest_amount)  # Original interest stored
                         )
+                        
                         splitwise_entries.append({
                             'splitwise_id': str(splitwise_entry.splitwise_id),
                             'syndicator_username': syndicator_user.username,
                             'syndicator_user_id': str(syndicator_user.user_id),
                             'principal_amount': splitwise_entry.principal_amount,
-                            'interest_amount': splitwise_entry.interest_amount
+                            'original_interest': splitwise_entry.interest_amount,
+                            'interest_after_commission': splitwise_entry.get_interest_after_commission(),
+                            'commission_deducted': splitwise_entry.get_commission_deducted()
                         })
+                
+                # Calculate commission per syndicator for response (excluding risk taker)
+                commission_per_syndicator = 0
+                if risk_taker_flag:
+                    syndicators_excluding_risk_taker = new_transaction.splitwise_entries.exclude(
+                        syndicator_id=risk_taker
+                    )
+                    if syndicators_excluding_risk_taker.count() > 0:
+                        # Calculate total interest from syndicators excluding risk taker
+                        total_interest_for_commission = sum(entry.interest_amount for entry in syndicators_excluding_risk_taker)
+                        # Calculate commission amount as percentage
+                        commission_amount = (float(risk_taker_commission) / 100) * total_interest_for_commission
+                        commission_per_syndicator = commission_amount / syndicators_excluding_risk_taker.count()
                 
                 # Prepare response
                 response_data = {
@@ -636,14 +734,19 @@ class CreateTransactionView(APIView):
                     },
                     "total_principal_amount": new_transaction.total_principal_amount,
                     "total_interest": new_transaction.total_interest,
+                    "commission_details": {
+                        "risk_taker_flag": new_transaction.risk_taker_flag,
+                        "risk_taker_commission_percentage": new_transaction.risk_taker_commission,
+                        "commission_per_syndicator": commission_per_syndicator,
+                        "syndicators_paying_commission": new_transaction.splitwise_entries.exclude(
+                            syndicator_id=risk_taker
+                        ).count()
+                    },
                     "transaction_type": "syndicated" if syndicate_details else "solo"
                 }
                 
-                if syndicate_details:
-                    response_data["splitwise_entries_count"] = len(splitwise_entries)
-                    response_data["splitwise_entries"] = splitwise_entries
-                else:
-                    response_data["note"] = "Solo transaction - risk taker is solely responsible"
+                response_data["splitwise_entries_count"] = len(splitwise_entries)
+                response_data["splitwise_entries"] = splitwise_entries
                 
                 return Response(response_data, status=status.HTTP_201_CREATED)
                 
@@ -658,6 +761,7 @@ class CreateTransactionView(APIView):
 
 
 
+# Updated UserSplitwiseView with Commission Support
 class UserSplitwiseView(APIView):
     """Get all splitwise entries for the authenticated user"""
     permission_classes = [IsAuthenticated]
@@ -666,7 +770,6 @@ class UserSplitwiseView(APIView):
         try:
             user = request.user
             
-            # Get all splitwise entries where the user is a syndicator
             splitwise_entries = Splitwise.objects.filter(syndicator_id=user).select_related(
                 'transaction_id', 
                 'transaction_id__risk_taker_id'
@@ -683,14 +786,22 @@ class UserSplitwiseView(APIView):
                     "splitwise_entries": []
                 }, status=status.HTTP_200_OK)
             
-            # Serialize the data
+            # Serialize with commission calculations
             serialized_entries = []
             total_principal_committed = 0
-            total_interest_earning = 0
+            total_original_interest = 0
+            total_interest_after_commission = 0
+            total_commission_paid = 0
             
             for entry in splitwise_entries:
                 total_principal_committed += entry.principal_amount
-                total_interest_earning += entry.interest_amount
+                total_original_interest += entry.interest_amount
+                
+                interest_after_commission = entry.get_interest_after_commission()
+                total_interest_after_commission += interest_after_commission
+                
+                commission_deducted = entry.get_commission_deducted()
+                total_commission_paid += commission_deducted
                 
                 serialized_entries.append({
                     "splitwise_id": str(entry.splitwise_id),
@@ -701,7 +812,10 @@ class UserSplitwiseView(APIView):
                         "name": entry.transaction_id.risk_taker_id.name
                     },
                     "principal_amount": entry.principal_amount,
-                    "interest_amount": entry.interest_amount,
+                    "original_interest": entry.interest_amount,
+                    "interest_after_commission": interest_after_commission,
+                    "commission_deducted": commission_deducted,
+                    "commission_flag": entry.transaction_id.risk_taker_flag,
                     "transaction_start_date": entry.transaction_id.start_date.isoformat(),
                     "splitwise_created_at": entry.created_at.isoformat()
                 })
@@ -715,7 +829,9 @@ class UserSplitwiseView(APIView):
                 },
                 "summary": {
                     "total_principal_committed": total_principal_committed,
-                    "total_interest_earning": total_interest_earning,
+                    "total_original_interest": total_original_interest,
+                    "total_interest_after_commission": total_interest_after_commission,
+                    "total_commission_paid": total_commission_paid,
                     "splitwise_count": len(serialized_entries)
                 },
                 "splitwise_entries": serialized_entries
@@ -728,6 +844,8 @@ class UserSplitwiseView(APIView):
                 "error": f"An unexpected error occurred: {str(e)}"
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
+# Updated TransactionSplitwiseView with Commission Support
 class TransactionSplitwiseView(APIView):
     """Get all splitwise entries for a specific transaction"""
     permission_classes = [IsAuthenticated]
@@ -736,8 +854,6 @@ class TransactionSplitwiseView(APIView):
         try:
             user = request.user
             
-            # Verify the transaction exists and the user has access to it
-            # (either as risk_taker or as a syndicator)
             try:
                 transaction = Transactions.objects.get(transaction_id=transaction_id)
             except Transactions.DoesNotExist:
@@ -745,14 +861,12 @@ class TransactionSplitwiseView(APIView):
                     "error": "Transaction not found"
                 }, status=status.HTTP_404_NOT_FOUND)
             
-            # Check if user has permission to view this transaction
+            # Check permissions (same as before)
             user_has_access = False
             
-            # Check if user is the risk taker
             if transaction.risk_taker_id == user:
                 user_has_access = True
             else:
-                # Check if user is one of the syndicators
                 user_splitwise = Splitwise.objects.filter(
                     transaction_id=transaction,
                     syndicator_id=user
@@ -765,14 +879,31 @@ class TransactionSplitwiseView(APIView):
                     "error": "You don't have permission to view this transaction"
                 }, status=status.HTTP_403_FORBIDDEN)
             
-            # Get all splitwise entries for this transaction
+            # Get splitwise entries with commission calculations
             splitwise_entries = Splitwise.objects.filter(
                 transaction_id=transaction
             ).select_related('syndicator_id').order_by('created_at')
             
-            # Serialize the data
             serialized_entries = []
+            total_commission_distributed = 0
+            
+            # Calculate commission per syndicator (excluding risk taker)
+            commission_per_syndicator = 0
+            syndicators_excluding_risk_taker = splitwise_entries.exclude(
+                syndicator_id=transaction.risk_taker_id
+            )
+            if transaction.risk_taker_flag and syndicators_excluding_risk_taker.count() > 0:
+                # Calculate total interest from syndicators excluding risk taker
+                total_interest_for_commission = sum(entry.interest_amount for entry in syndicators_excluding_risk_taker)
+                # Calculate commission amount as percentage
+                commission_amount = (transaction.risk_taker_commission / 100) * total_interest_for_commission
+                commission_per_syndicator = commission_amount / syndicators_excluding_risk_taker.count()
+            
             for entry in splitwise_entries:
+                interest_after_commission = entry.get_interest_after_commission()
+                commission_deducted = entry.get_commission_deducted()
+                total_commission_distributed += commission_deducted
+                
                 serialized_entries.append({
                     "splitwise_id": str(entry.splitwise_id),
                     "syndicator": {
@@ -782,7 +913,10 @@ class TransactionSplitwiseView(APIView):
                         "email": entry.syndicator_id.email
                     },
                     "principal_amount": entry.principal_amount,
-                    "interest_amount": entry.interest_amount,
+                    "original_interest": entry.interest_amount,
+                    "interest_after_commission": interest_after_commission,
+                    "commission_deducted": commission_deducted,
+                    "is_risk_taker": entry.syndicator_id == transaction.risk_taker_id,
                     "created_at": entry.created_at.isoformat()
                 })
             
@@ -797,13 +931,21 @@ class TransactionSplitwiseView(APIView):
                     },
                     "total_principal_amount": transaction.total_principal_amount,
                     "total_interest": transaction.total_interest,
+                    "commission_details": {
+                        "risk_taker_flag": transaction.risk_taker_flag,
+                        "risk_taker_commission_percentage": transaction.risk_taker_commission,
+                        "commission_per_syndicator": commission_per_syndicator,
+                        "syndicators_paying_commission": syndicators_excluding_risk_taker.count()
+                    },
                     "start_date": transaction.start_date.isoformat(),
                     "created_at": transaction.created_at.isoformat()
                 },
                 "splitwise_summary": {
                     "total_splits": len(serialized_entries),
                     "total_principal_split": sum(entry.principal_amount for entry in splitwise_entries),
-                    "total_interest_split": sum(entry.interest_amount for entry in splitwise_entries)
+                    "total_original_interest": sum(entry.interest_amount for entry in splitwise_entries),
+                    "total_interest_after_commission": sum(entry.get_interest_after_commission() for entry in splitwise_entries),
+                    "total_commission_distributed": total_commission_distributed
                 },
                 "splitwise_entries": serialized_entries
             }
