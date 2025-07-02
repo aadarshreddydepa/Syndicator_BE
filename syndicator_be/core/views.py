@@ -64,7 +64,6 @@ class LoginView(APIView):
     
     
 
-# Updated PortfolioView with Commission Logic
 class PortfolioView(APIView):
     permission_classes = [IsAuthenticated]
     
@@ -72,11 +71,24 @@ class PortfolioView(APIView):
         try:
             user = request.user
             
+            # Get all transactions where user is involved (either as risk taker or syndicate member)
+            all_user_transactions = Transactions.objects.filter(
+                Q(risk_taker_id=user) | Q(splitwise_entries__syndicator_id=user)
+            ).distinct()
+            
             # Get all splitwise entries where user is a syndicate member
             splitwise_entries = Splitwise.objects.filter(syndicator_id=user)
             
             # Get transactions where user is risk taker
             risk_taker_transactions = Transactions.objects.filter(risk_taker_id=user)
+            
+            # Calculate total original interest from all transactions (transaction-level)
+            total_original_interest_from_transactions = 0
+            for transaction in all_user_transactions:
+                # Calculate interest based on transaction's ROI and principal
+                # Assuming total_interest field contains the ROI percentage
+                transaction_interest = (transaction.total_principal_amount * transaction.total_interest) / 100
+                total_original_interest_from_transactions += transaction_interest
             
             # Calculate amounts for syndicate member role
             syndicate_principal = 0
@@ -85,19 +97,17 @@ class PortfolioView(APIView):
             
             for entry in splitwise_entries:
                 syndicate_principal += entry.principal_amount
-                syndicate_original_interest += entry.interest_amount
+                # Calculate original interest for this splitwise entry
+                syndicate_original_interest += (entry.interest_amount * entry.principal_amount) / 100
                 syndicate_interest_after_commission += entry.get_interest_after_commission()
             
             # Calculate amounts for risk taker role
             risk_taker_principal = 0
-            risk_taker_interest = 0
+            risk_taker_original_interest = 0
+            risk_taker_final_interest = 0
             total_commission_earned = 0
             
             for transaction in risk_taker_transactions:
-                # For risk taker transactions, the total_interest is already the absolute amount
-                # We need to calculate how much interest the risk taker actually gets
-                # This depends on whether they're also a syndicator in the same transaction
-                
                 # Get the risk taker's splitwise entry for this transaction (if any)
                 risk_taker_splitwise = Splitwise.objects.filter(
                     transaction_id=transaction,
@@ -106,11 +116,14 @@ class PortfolioView(APIView):
                 
                 if risk_taker_splitwise:
                     # Risk taker is also a syndicator - they get their splitwise interest
-                    risk_taker_interest += risk_taker_splitwise.get_interest_after_commission()
+                    # Don't add to risk_taker amounts as these are already counted in syndicate amounts
+                    risk_taker_final_interest += risk_taker_splitwise.get_interest_after_commission()
+                    risk_taker_original_interest += (risk_taker_splitwise.interest_amount * risk_taker_splitwise.principal_amount) / 100
                     # Don't add principal here as it's already counted in syndicate_principal
                 else:
                     # Risk taker is not a syndicator - they get the full transaction interest
-                    risk_taker_interest += transaction.total_interest
+                    risk_taker_original_interest += (transaction.total_interest * transaction.total_principal_amount) / 100
+                    risk_taker_final_interest += transaction.total_interest
                     risk_taker_principal += transaction.total_principal_amount
                 
                 # Calculate commission earned by summing up commission deducted from syndicators
@@ -118,11 +131,15 @@ class PortfolioView(APIView):
                     for entry in transaction.splitwise_entries.exclude(syndicator_id=user):
                         total_commission_earned += entry.get_commission_deducted()
             
-            # Calculate total principal amount based on the amount managed by the risk taker
-            # This includes all transactions where they are the risk taker, regardless of syndicate role
-            total_principal = sum(transaction.total_principal_amount for transaction in risk_taker_transactions)
-            total_original_interest = syndicate_original_interest + risk_taker_interest
-            total_final_interest = syndicate_interest_after_commission + risk_taker_interest + total_commission_earned
+            # Calculate total principal from all transactions user is involved in
+            total_principal_from_all_transactions = 0
+            for transaction in all_user_transactions:
+                total_principal_from_all_transactions += transaction.total_principal_amount
+
+            # Use transaction-level calculation for total original interest
+            total_principal = total_principal_from_all_transactions
+            total_original_interest = total_original_interest_from_transactions
+            total_final_interest = total_original_interest - total_commission_earned
             
             return Response({
                 "total_principal_amount": total_principal,
@@ -132,7 +149,8 @@ class PortfolioView(APIView):
                 "breakdown": {
                     "as_risk_taker": {
                         "principal": risk_taker_principal,
-                        "interest": risk_taker_interest,  # Risk taker gets interest based on their role
+                        "original_interest": risk_taker_original_interest,
+                        "final_interest": risk_taker_final_interest,
                         "commission_earned": total_commission_earned
                     },
                     "as_syndicate_member": {
@@ -140,6 +158,10 @@ class PortfolioView(APIView):
                         "original_interest": syndicate_original_interest,
                         "interest_after_commission": syndicate_interest_after_commission,
                         "commission_paid": syndicate_original_interest - syndicate_interest_after_commission
+                    },
+                    "transaction_level_totals": {
+                        "total_principal_from_all_transactions": total_principal,
+                        "total_original_interest_from_all_transactions": total_original_interest
                     }
                 }
             }, status=status.HTTP_200_OK)
