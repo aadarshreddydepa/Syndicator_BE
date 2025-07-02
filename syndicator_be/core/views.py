@@ -61,9 +61,6 @@ class LoginView(APIView):
             
             return response
         return Response({"error": "Invalid credentials"}, status=status.HTTP_400_BAD_REQUEST)
-    
-    
-
 class PortfolioView(APIView):
     permission_classes = [IsAuthenticated]
     
@@ -170,6 +167,7 @@ class PortfolioView(APIView):
             return Response({
                 "error": str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 class SyndicateView(APIView):
     permission_classes = [IsAuthenticated]
