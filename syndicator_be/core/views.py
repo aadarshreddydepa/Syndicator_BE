@@ -17,6 +17,30 @@ from django.conf import settings
 from django.db.models import Q
 # Create your views here.
 
+# views.py
+from django.http import JsonResponse
+from django.db import connection, OperationalError
+import os
+
+
+def db_health_check(request):
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1;")
+            result = cursor.fetchone()
+
+        return JsonResponse({
+            "db_connected": result[0] == 1,
+            "db_name": os.getenv("DB_NAME")
+        })
+
+    except OperationalError as e:
+        return JsonResponse({
+            "db_connected": False,
+            "error": str(e),
+            "db_name": os.getenv("DB_NAME")
+        }, status=500)
+
 class RegisterView(APIView):
 
     def post(self, request):

@@ -1,0 +1,28 @@
+{
+  "prod": {
+    "aws_region": "ap-south-1",
+    "django_settings": "syndicator_be.settings",
+    "exclude": ["boto3", "dateutil", "botocore", "s3transfer", "concurrent"],
+    "profile_name": "default",
+    "project_name": "syndicator-be",
+    "runtime": "python3.13",
+    "s3_bucket": "zappa-syndicator-bucket",
+    "memory_size": 128,
+    "timeout_seconds": 30,
+    "keep_warm": false,
+    "manage_roles": true,
+    "vpc_config": {
+      "SubnetIds": ["subnet-******", "subnet-******"],
+      "SecurityGroupIds": ["sg-******"]
+    },
+    "environment_variables": {
+      "DB_NAME": "db_******",
+      "DB_USER": "db_******",
+      "DB_PASSWORD": "******",
+      "DB_HOST": "******  ",
+      "DB_PORT": "5432",
+      "DEBUG": "False",
+      "ALLOWED_HOSTS": "127.0.0.1,localhost"
+    }
+  }
+}
