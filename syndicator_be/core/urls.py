@@ -10,7 +10,8 @@ from .views import (
     AddMutualFriendView, 
     UpdateFriendRequestStatusView,
     UserSplitwiseView,
-    TransactionSplitwiseView
+    TransactionSplitwiseView,
+    db_health_check
 )
 
 urlpatterns = [
@@ -27,4 +28,6 @@ urlpatterns = [
     # New Splitwise endpoints
     path("my_splitwise/", UserSplitwiseView.as_view(), name="user_splitwise"),
     path("transaction/<uuid:transaction_id>/splitwise/", TransactionSplitwiseView.as_view(), name="transaction_splitwise"),
+    path("health/db/", db_health_check, name="db_health_check"),
+
 ]
