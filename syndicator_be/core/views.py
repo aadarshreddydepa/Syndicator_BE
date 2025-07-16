@@ -579,6 +579,10 @@ class CreateTransactionView(APIView):
         total_principal_amount = request.data.get("total_principal_amount")
         total_interest_amount = request.data.get("total_interest_amount")
         syndicate_details = request.data.get("syndicate_details", {})
+        start_date = request.data.get("start_date")
+        end_date = request.data.get("end_date")
+        month_period_of_loan = request.data.get("month_period_of_loan")
+        lender_name = request.data.get("lender_name")
         
         # NEW: Commission-related fields
         risk_taker_flag = request.data.get("risk_taker_flag", False)
@@ -678,7 +682,10 @@ class CreateTransactionView(APIView):
                     total_interest=float(total_interest_amount),
                     risk_taker_flag=risk_taker_flag,
                     risk_taker_commission=float(risk_taker_commission),
-                    start_date=date.today()
+                    start_date=start_date,
+                    end_date=end_date,
+                    lender_name=lender_name,
+                    month_period_of_loan=month_period_of_loan
                 )
                 
                 # CASE 1: No syndicate details - Create single splitwise entry for risk taker
@@ -841,6 +848,9 @@ class UserSplitwiseView(APIView):
                     "commission_deducted": commission_deducted,
                     "commission_flag": entry.transaction_id.risk_taker_flag,
                     "transaction_start_date": entry.transaction_id.start_date.isoformat(),
+                    "transaction_end_date": entry.transaction_id.end_date.isoformat(),
+                    "month_period_of_loan": entry.transaction_id.month_period_of_loan,
+                    "lender_name": entry.transaction_id.lender_name,
                     "splitwise_created_at": entry.created_at.isoformat()
                 })
             
@@ -962,6 +972,9 @@ class TransactionSplitwiseView(APIView):
                         "syndicators_paying_commission": syndicators_excluding_risk_taker.count()
                     },
                     "start_date": transaction.start_date.isoformat(),
+                    "end_date": transaction.end_date.isoformat(),
+                    "month_period_of_loan": transaction.month_period_of_loan,
+                    "lender_name": transaction.lender_name,
                     "created_at": transaction.created_at.isoformat()
                 },
                 "splitwise_summary": {

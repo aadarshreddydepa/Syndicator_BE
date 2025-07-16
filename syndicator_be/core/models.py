@@ -52,6 +52,9 @@ class Transactions(models.Model):
     risk_taker_flag = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     start_date = models.DateField(blank=False)
+    end_date = models.DateField(blank=False)
+    lender_name = models.CharField(max_length=26, blank=True, null=True)
+    month_period_of_loan = models.IntegerField(blank=False)
 
 class Splitwise(models.Model):
     splitwise_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

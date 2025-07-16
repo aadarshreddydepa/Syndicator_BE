@@ -283,7 +283,10 @@ class SplitwiseModelTests(TestCase):
             total_interest=200,
             risk_taker_flag=False,
             risk_taker_commission=0,
-            start_date=date.today()
+            month_period_of_loan=1,
+            start_date=date.today(),
+            end_date=date.today(),
+            lender_name='test lender'
         )
         
         splitwise_entry = Splitwise.objects.create(
@@ -304,7 +307,10 @@ class SplitwiseModelTests(TestCase):
             total_interest=200,
             risk_taker_flag=True,
             risk_taker_commission=50,  # 50% commission
-            start_date=date.today()
+            month_period_of_loan=1,
+            start_date=date.today(),
+            end_date=date.today(),
+            lender_name='test lender'
         )
         
         splitwise_entry = Splitwise.objects.create(
@@ -332,7 +338,10 @@ class SplitwiseModelTests(TestCase):
             total_interest=200,
             risk_taker_flag=True,
             risk_taker_commission=50,  # 50% commission
-            start_date=date.today()
+            month_period_of_loan=1,
+            start_date=date.today(),
+            end_date=date.today(),
+            lender_name='test lender'
         )
         
         # Create entry for risk taker
