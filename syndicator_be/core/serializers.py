@@ -81,6 +81,9 @@ class PortfolioSerializer(serializers.ModelSerializer):
             'total_commission_earned',
             'created_at', 
             'start_date',
+            'end_date',
+            'lender_name',
+            'month_period_of_loan',
             'splitwise_entries'
         ]
     
